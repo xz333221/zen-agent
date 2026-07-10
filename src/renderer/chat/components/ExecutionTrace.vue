@@ -204,7 +204,7 @@ function tokenBarWidth(value: number): string {
 <template>
   <div class="execution-trace">
     <!-- ═══ Level 0: 折叠摘要行 ═══ -->
-    <button class="trace-summary" @click="expanded = !expanded">
+    <div class="trace-summary" role="button" tabindex="0" @click="expanded = !expanded" @keydown.enter="expanded = !expanded">
       <svg class="trace-toggle" :class="{ rotated: expanded }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="9 18 15 12 9 6"/>
       </svg>
@@ -226,7 +226,7 @@ function tokenBarWidth(value: number): string {
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
         </svg>
       </button>
-    </button>
+    </div>
 
     <!-- ═══ Level 1: 步骤列表 ═══ -->
     <div v-if="expanded" class="trace-steps">
@@ -607,6 +607,8 @@ function tokenBarWidth(value: number): string {
   font-size: 12px;
   color: var(--text-secondary);
   transition: background 0.15s;
+  user-select: none;
+  border-radius: var(--radius-input);
 }
 
 .trace-summary:hover {
