@@ -13,10 +13,10 @@ export function createSettingsWindow(): BrowserWindow {
   const { workArea } = screen.getPrimaryDisplay()
 
   // 根据屏幕工作区自适应窗口尺寸（4K/高分辨率屏幕自动放大）
-  const width = Math.min(900, Math.max(620, Math.round(workArea.width * 0.3)))
-  const height = Math.min(1000, Math.max(720, Math.round(workArea.height * 0.75)))
-  const minWidth = Math.min(720, Math.max(480, Math.round(workArea.width * 0.22)))
-  const minHeight = Math.min(820, Math.max(560, Math.round(workArea.height * 0.55)))
+  const width = Math.min(1100, Math.max(700, Math.round(workArea.width * 0.36)))
+  const height = Math.min(1200, Math.max(720, Math.round(workArea.height * 0.82)))
+  const minWidth = Math.min(760, Math.max(520, Math.round(workArea.width * 0.25)))
+  const minHeight = Math.min(820, Math.max(560, Math.round(workArea.height * 0.6)))
 
   // 居中显示
   const x = workArea.x + Math.round((workArea.width - width) / 2)

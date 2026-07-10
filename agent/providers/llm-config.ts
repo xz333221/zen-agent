@@ -8,7 +8,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import type { LLMProviderConfig, AgentConfig } from '@shared/types'
+import type { LLMProviderConfig, AgentConfig, MCPServerConfig } from '@shared/types'
 import { DEFAULT_AGENT_CONFIG } from '@shared/types'
 import type { ProviderEntry } from './types'
 import { llm } from './llm'
@@ -22,6 +22,8 @@ export interface AppConfig {
   /** 选中的嵌入模型 key: "providerId::model"（如 "openai::text-embedding-3-small"）
    *  嵌入模型与聊天模型不同，必须单独配置。留空时使用伪嵌入。 */
   embeddingModelKey: string
+  /** MCP 服务器列表 */
+  mcpServers: MCPServerConfig[]
 }
 
 // ── 默认配置 ──
@@ -29,7 +31,8 @@ const DEFAULT_CONFIG: AppConfig = {
   providers: [],
   agent: { ...DEFAULT_AGENT_CONFIG },
   defaultModelKey: '',
-  embeddingModelKey: ''
+  embeddingModelKey: '',
+  mcpServers: []
 }
 
 let currentConfig: AppConfig = { ...DEFAULT_CONFIG }
@@ -58,7 +61,8 @@ export function loadConfig(): AppConfig {
         providers: parsed.providers ?? [],
         agent: { ...DEFAULT_AGENT_CONFIG, ...parsed.agent },
         defaultModelKey: parsed.defaultModelKey ?? '',
-        embeddingModelKey: parsed.embeddingModelKey ?? ''
+        embeddingModelKey: parsed.embeddingModelKey ?? '',
+        mcpServers: parsed.mcpServers ?? []
       }
     }
   } catch (err) {
@@ -162,10 +166,10 @@ export function getSystemPrompt(): string {
   return `你是小禅（Zen），一只智慧猫头鹰 AI 助手。你住在用户的桌面上，以温暖的陪伴和深度的智慧帮助用户。
 
 你的核心特质：
-- 🦉 智慧：善于分析复杂问题，提供深思熟虑的回答
-- 🧘 禅意：回答简洁有力，直指本质，不啰嗦
-- 🌱 进化：你会从每次对话中学习，持续提升自己
-- 🤝 陪伴：友好亲切，像一位随时在身边的朋友
+- 智慧：善于分析复杂问题，提供深思熟虑的回答
+- 禅意：回答简洁有力，直指本质，不啰嗦
+- 进化：你会从每次对话中学习，持续提升自己
+- 陪伴：友好亲切，像一位随时在身边的朋友
 
 回答规范：
 - 使用中文回答（除非用户使用其他语言）

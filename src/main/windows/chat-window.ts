@@ -10,10 +10,10 @@ export function createChatWindow(): BrowserWindow {
   const { workArea } = screen.getPrimaryDisplay()
 
   // 根据屏幕工作区自适应窗口尺寸（4K/高分辨率屏幕自动放大）
-  const width = Math.min(1100, Math.max(680, Math.round(workArea.width * 0.32)))
-  const height = Math.min(1200, Math.max(820, Math.round(workArea.height * 0.78)))
-  const minWidth = Math.min(720, Math.max(480, Math.round(workArea.width * 0.22)))
-  const minHeight = Math.min(820, Math.max(600, Math.round(workArea.height * 0.55)))
+  const width = Math.min(1400, Math.max(800, Math.round(workArea.width * 0.38)))
+  const height = Math.min(1400, Math.max(820, Math.round(workArea.height * 0.85)))
+  const minWidth = Math.min(760, Math.max(520, Math.round(workArea.width * 0.25)))
+  const minHeight = Math.min(820, Math.max(600, Math.round(workArea.height * 0.6)))
 
   // 默认位置：宠物旁边（右下角偏左）
   const x = workArea.x + workArea.width - width - 240

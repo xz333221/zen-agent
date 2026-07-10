@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type LLMProviderConfig } from '@shared/types'
+import { IPC_CHANNELS, type LLMProviderConfig, type Skill, type MCPServerConfig, type MCPTestResult } from '@shared/types'
 
 const settingsAPI = {
   /** 获取配置 */
@@ -11,6 +11,7 @@ const settingsAPI = {
     defaultModel?: string
     embeddingModel?: string
     agent?: { maxTokens?: number; outputReserve?: number }
+    mcpServers?: MCPServerConfig[]
   }) => ipcRenderer.invoke(IPC_CHANNELS.SYS_SET_CONFIG, config),
 
   /** 获取 Provider 列表 */
@@ -75,7 +76,55 @@ const settingsAPI = {
 
   /** 测试连接（通过主进程避免 CORS） */
   testConnection: (baseURL: string, apiKey: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.SYS_TEST_CONNECTION, baseURL, apiKey)
+    ipcRenderer.invoke(IPC_CHANNELS.SYS_TEST_CONNECTION, baseURL, apiKey),
+
+  // ── 技能管理 ──
+
+  /** 获取所有技能 */
+  listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILL_LIST),
+
+  /** 创建技能 */
+  createSkill: (skill: {
+    name: string
+    description: string
+    content: string
+    status?: Skill['status']
+  }) => ipcRenderer.invoke(IPC_CHANNELS.SKILL_CREATE, skill),
+
+  /** 更新技能 */
+  updateSkill: (id: string, updates: {
+    name?: string
+    description?: string
+    content?: string
+    status?: Skill['status']
+  }) => ipcRenderer.invoke(IPC_CHANNELS.SKILL_UPDATE, id, updates),
+
+  /** 删除技能 */
+  deleteSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILL_DELETE, id),
+
+  // ── MCP 服务器管理 ──
+
+  /** 获取所有 MCP 服务器 */
+  listMCPServers: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST),
+
+  /** 添加 MCP 服务器 */
+  addMCPServer: (server: Omit<MCPServerConfig, 'id' | 'createdAt' | 'updatedAt'>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_ADD, server),
+
+  /** 更新 MCP 服务器 */
+  updateMCPServer: (id: string, updates: Partial<MCPServerConfig>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_UPDATE, id, updates),
+
+  /** 删除 MCP 服务器 */
+  deleteMCPServer: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_DELETE, id),
+
+  /** 启用/禁用 MCP 服务器 */
+  toggleMCPServer: (id: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_TOGGLE, id, enabled),
+
+  /** 测试 MCP 服务器连接 */
+  testMCPServer: (server: MCPServerConfig) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_TEST, server)
 }
 
 contextBridge.exposeInMainWorld('settingsAPI', settingsAPI)

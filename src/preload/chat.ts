@@ -15,6 +15,22 @@ const chatAPI = {
   loadHistory: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CHAT_LOAD_HISTORY, sessionId),
 
+  /** 获取所有会话列表 */
+  listSessions: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHAT_LIST_SESSIONS),
+
+  /** 删除会话 */
+  deleteSession: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHAT_DELETE_SESSION, sessionId),
+
+  /** 加载指定会话 */
+  loadSession: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHAT_LOAD_SESSION, sessionId),
+
+  /** 语音转文字（通过主进程调用 Whisper API） */
+  transcribe: (audioBase64: string, mimeType: string, language?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHAT_TRANSCRIBE, audioBase64, mimeType, language),
+
   /** 获取系统配置 */
   getConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SYS_GET_CONFIG),
 

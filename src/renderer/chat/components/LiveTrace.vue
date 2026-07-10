@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { TraceStep, StepType } from '@shared/types'
+import TraceIcon from './TraceIcon.vue'
+import StatusIcon from './StatusIcon.vue'
 
 const props = defineProps<{
   steps: TraceStep[]
@@ -8,22 +10,6 @@ const props = defineProps<{
 
 // ── 折叠状态 ──
 const expanded = ref(true)
-
-// ── 步骤图标 ──
-const stepIcons: Record<StepType, string> = {
-  intent: '📝',
-  memory: '🧠',
-  skill_match: '🔧',
-  think: '💭',
-  act: '🔍',
-  observe: '👁',
-  reflect: '🔄',
-  store: '💾',
-  stats: '📊',
-  complete: '✅',
-  plan: '📋',
-  delegate: '🤝'
-}
 
 // ── 自动滚动到底部 ──
 const containerRef = ref<HTMLElement | null>(null)
@@ -97,8 +83,17 @@ async function copyStepOutput(step: TraceStep) {
   <div class="live-trace" data-testid="live-trace">
     <!-- 摘要行 -->
     <button class="live-summary" @click="expanded = !expanded">
-      <span class="live-toggle">{{ expanded ? '▾' : '▸' }}</span>
-      <span class="live-icon">{{ summary.isComplete ? '✅' : '🔄' }}</span>
+      <svg class="live-toggle" :class="{ rotated: expanded }" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+      <span class="live-icon">
+        <svg v-if="summary.isComplete" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+        <svg v-else class="live-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+        </svg>
+      </span>
       <span class="live-label">{{ summary.isComplete ? '执行完成' : '执行中...' }}</span>
       <span class="live-meta">{{ summary.count }} 步</span>
       <span v-if="!summary.isComplete" class="live-pulse"></span>
@@ -115,18 +110,24 @@ async function copyStepOutput(step: TraceStep) {
         >
           <!-- 步骤行 -->
           <div class="live-step-row">
-            <span class="live-step-icon">{{ stepIcons[step.type] || '•' }}</span>
+            <TraceIcon :type="step.type" :size="14" class="live-step-icon" />
             <span class="live-step-index">{{ step.index }}</span>
             <span class="live-step-name">{{ step.name }}</span>
             <span class="live-step-status" :class="`status-${step.status}`">
-              {{ step.status === 'running' ? '⏳' : step.status === 'completed' ? '✅' : step.status === 'error' ? '❌' : '⏭️' }}
+              <StatusIcon :status="step.status" :size="12" />
             </span>
             <button
               class="copy-btn"
               title="复制输出"
               @click.stop="copyStepOutput(step)"
             >
-              {{ copiedId === step.id ? '✓' : '📋' }}
+              <svg v-if="copiedId === step.id" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
             </button>
           </div>
 
@@ -153,7 +154,9 @@ async function copyStepOutput(step: TraceStep) {
             </template>
             <template v-else-if="step.detail.type === 'reflect'">
               <span class="brief-stars">
-                <span v-for="i in 5" :key="i" :class="{ filled: i <= step.detail.selfScore }">★</span>
+                <svg v-for="i in 5" :key="i" :class="{ filled: i <= step.detail.selfScore }" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
               </span>
             </template>
             <template v-else-if="step.detail.type === 'plan'">
@@ -206,12 +209,28 @@ async function copyStepOutput(step: TraceStep) {
 }
 
 .live-toggle {
-  font-size: 9px;
-  width: 10px;
+  width: 9px;
+  height: 9px;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.live-toggle.rotated {
+  transform: rotate(90deg);
 }
 
 .live-icon {
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.live-spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .live-label {
@@ -280,7 +299,8 @@ async function copyStepOutput(step: TraceStep) {
 }
 
 .live-step-icon {
-  font-size: 13px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .live-step-index {
@@ -295,8 +315,15 @@ async function copyStepOutput(step: TraceStep) {
 }
 
 .live-step-status {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
+
+.status-running { color: var(--color-blue); }
+.status-completed { color: var(--color-brand); }
+.status-error { color: var(--color-red); }
+.status-skipped { color: var(--text-meta); }
 
 .copy-btn {
   border: none;
@@ -308,6 +335,9 @@ async function copyStepOutput(step: TraceStep) {
   opacity: 0;
   transition: opacity 0.15s, background 0.15s;
   color: var(--text-meta);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .live-step:hover .copy-btn {
@@ -338,7 +368,13 @@ async function copyStepOutput(step: TraceStep) {
   color: var(--text-secondary);
 }
 
-.brief-stars span {
+.brief-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.brief-stars svg {
   color: var(--surface-border);
   font-size: 11px;
 }

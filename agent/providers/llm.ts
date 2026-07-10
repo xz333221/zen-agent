@@ -7,7 +7,7 @@
  * 设计参考: article-generator/server/src/services/llm.ts
  */
 
-import OpenAI from 'openai'
+import OpenAI, { toFile } from 'openai'
 import type { LLMConfig, ProviderEntry, ModelKey, ChatRequest, ChatStreamCallbacks } from './types'
 
 // ── 默认超时: 8 分钟 ──
@@ -233,6 +233,36 @@ export class LLMProvider {
     }
 
     return response.data[0].embedding
+  }
+
+  /** 语音转文字（使用 OpenAI 兼容的 /audio/transcriptions 接口） */
+  async transcribeAudio(
+    audioBuffer: Buffer,
+    mimeType: string,
+    language?: string,
+    modelKey?: string
+  ): Promise<string> {
+    const cfg = this.resolveModel(modelKey)
+    const client = this.getClient(cfg.apiKey, cfg.baseURL)
+
+    // 根据 MIME 类型确定文件扩展名
+    const ext = mimeType.includes('webm') ? 'webm'
+      : mimeType.includes('ogg') ? 'ogg'
+      : mimeType.includes('mp3') ? 'mp3'
+      : mimeType.includes('wav') ? 'wav'
+      : 'webm'
+
+    // 使用 OpenAI SDK 的 toFile 工具将 Buffer 转为 File 对象
+    const file = await toFile(audioBuffer, `audio.${ext}`, { type: mimeType })
+
+    const params: OpenAI.Audio.Transcriptions.TranscriptionCreateParams = {
+      file,
+      model: 'whisper-1',
+      ...(language ? { language } : {}),
+    }
+
+    const response = await client.audio.transcriptions.create(params)
+    return response.text || ''
   }
 }
 

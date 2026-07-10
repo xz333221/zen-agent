@@ -38,15 +38,18 @@ body {
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   -webkit-app-region: drag;
   user-select: none;
+  flex-shrink: 0;
 }
 
 .title-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
-.title-owl { font-size: 16px; }
+.title-owl-icon {
+  color: #5BAA8A;
+}
 
 .title-text {
   font-size: 14px;
@@ -61,17 +64,17 @@ body {
 }
 
 .title-btn {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: #6b7280;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: all 0.2s ease;
 }
 
 .title-btn:hover {
@@ -84,11 +87,67 @@ body {
   transform: scale(0.96);
 }
 
-/* ═══ 内容区 ═══ */
+/* ═══ 主体区域 ═══ */
+.settings-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ═══ 左侧导航 ═══ */
+.settings-nav {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.015);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+  overflow-y: auto;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.nav-item:hover {
+  background: rgba(91, 170, 138, 0.06);
+  color: #5BAA8A;
+}
+
+.nav-item.active {
+  background: rgba(91, 170, 138, 0.1);
+  color: #5BAA8A;
+  font-weight: 600;
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+}
+
+.nav-label {
+  white-space: nowrap;
+}
+
+/* ═══ 右侧内容区 ═══ */
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 20px 28px;
 }
 
 .settings-content::-webkit-scrollbar {
@@ -246,26 +305,30 @@ body {
 }
 
 .btn-icon {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
+  color: #6b7280;
   transition: all 0.15s;
 }
 
 .btn-icon:hover {
   background: rgba(0, 0, 0, 0.06);
+  color: #333;
 }
 
 /* ═══ 按钮 ═══ */
 .btn-add {
-  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
   border: 1px solid rgba(91, 170, 138, 0.2);
   border-radius: 8px;
   background: rgba(91, 170, 138, 0.06);
@@ -287,6 +350,8 @@ body {
 }
 
 .btn-save {
+  display: inline-flex;
+  align-items: center;
   padding: 10px 28px;
   border: none;
   border-radius: 10px;
@@ -315,6 +380,8 @@ body {
 }
 
 .btn-cancel {
+  display: inline-flex;
+  align-items: center;
   padding: 8px 20px;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 10px;
@@ -323,10 +390,16 @@ body {
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s;
+  margin-left: 8px;
 }
 
 .btn-cancel:hover {
   background: rgba(0, 0, 0, 0.04);
+}
+
+.btn-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ═══ 表单 ═══ */
@@ -420,12 +493,23 @@ body {
 }
 
 .saved-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 12px;
   border-radius: 8px;
   background: rgba(91, 170, 138, 0.08);
   color: #5BAA8A;
   font-size: 13px;
   margin-bottom: 12px;
+}
+
+.result-msg {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(91, 170, 138, 0.06);
+  color: #5BAA8A;
+  font-size: 12px;
 }
 
 /* ═══ 操作区 ═══ */
@@ -510,6 +594,7 @@ body {
   padding: 16px 20px;
   overflow-y: auto;
   flex: 1;
+  max-height: calc(85vh - 120px);
 }
 
 .modal-footer {
@@ -519,37 +604,6 @@ body {
   padding: 12px 20px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
-}
-
-/* ═══ 预设按钮 ═══ */
-.preset-buttons {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-}
-
-.preset-label {
-  font-size: 12px;
-  color: #999;
-}
-
-.btn-preset {
-  padding: 3px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 6px;
-  background: transparent;
-  font-size: 12px;
-  color: #666;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-preset:hover {
-  background: rgba(91, 170, 138, 0.06);
-  border-color: rgba(91, 170, 138, 0.2);
-  color: #5BAA8A;
 }
 
 /* ═══ 快捷键配置 ═══ */
@@ -621,7 +675,6 @@ body {
   background: transparent;
   color: #999;
   cursor: pointer;
-  font-size: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -657,6 +710,25 @@ body {
 }
 
 .theme-dark .title-btn:hover {
+  background: rgba(91, 170, 138, 0.12);
+  color: #6BC4A0;
+}
+
+.theme-dark .settings-nav {
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(255, 255, 255, 0.05);
+}
+
+.theme-dark .nav-item {
+  color: #94a3b8;
+}
+
+.theme-dark .nav-item:hover {
+  background: rgba(91, 170, 138, 0.08);
+  color: #6BC4A0;
+}
+
+.theme-dark .nav-item.active {
   background: rgba(91, 170, 138, 0.12);
   color: #6BC4A0;
 }
@@ -745,14 +817,18 @@ body {
 
 .theme-option-btn {
   flex: 1;
-  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
   border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
   color: #666;
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s ease;
   text-align: center;
 }
 
@@ -785,9 +861,25 @@ body {
   color: #5BAA8A;
 }
 
-/* ═══ T-024: Ollama / 离线模式 ═══ */
-.status-online { color: #5BAA8A; font-weight: 600; }
-.status-offline { color: #E85D5D; font-weight: 600; }
+/* ═══ Ollama / 离线模式 ═══ */
+.status-online { color: #5BAA8A; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.status-offline { color: #E85D5D; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.online {
+  background: #5BAA8A;
+  box-shadow: 0 0 4px rgba(91, 170, 138, 0.5);
+}
+
+.status-dot.offline {
+  background: #E85D5D;
+}
 
 .btn-small {
   padding: 2px 8px;
@@ -862,28 +954,7 @@ body {
   color: #aaa;
 }
 
-/* ═══ T-023: 数据导出/导入 ═══ */
-.btn-cancel {
-  padding: 6px 16px;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  background: white;
-  cursor: pointer;
-  font-size: 13px;
-  margin-left: 8px;
-  transition: all 0.15s;
-}
-
-.btn-cancel:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.btn-cancel:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* ═══ Combobox (参考 ai-model-form) ═══ */
+/* ═══ Combobox ═══ */
 .combobox {
   position: relative;
 }
@@ -907,7 +978,7 @@ body {
 .combo-logo,
 .combo-logo-fallback {
   flex-shrink: 0;
-  color: var(--text-dim, #94a3b8);
+  color: #94a3b8;
 }
 
 .combo-input {
@@ -1115,7 +1186,6 @@ body {
   background: transparent;
   color: #94a3b8;
   cursor: pointer;
-  font-size: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1170,6 +1240,9 @@ body {
 
 /* ═══ Test Button ═══ */
 .btn-test {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 16px;
   border: 1px solid rgba(91, 170, 138, 0.3);
   border-radius: 8px;
@@ -1178,9 +1251,6 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
   transition: all 0.3s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -1230,13 +1300,18 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+/* ═══ Modal body scrollbar ═══ */
+.modal-body::-webkit-scrollbar {
+  width: 5px;
 }
 
-/* ═══ Modal Footer update ═══ */
-.modal-footer {
-  gap: 8px;
+.modal-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+}
+
+.theme-dark .modal-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 /* ═══ Combobox dark mode ═══ */
@@ -1328,7 +1403,77 @@ body {
   border-color: rgba(232, 93, 93, 0.15);
 }
 
-/* ═══ Reduced Motion (taste-skill compliance) ═══ */
+.theme-dark .btn-icon {
+  color: #94a3b8;
+}
+
+.theme-dark .btn-icon:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ddd;
+}
+
+.theme-dark .btn-add {
+  border-color: rgba(91, 170, 138, 0.15);
+  background: rgba(91, 170, 138, 0.08);
+  color: #6BC4A0;
+}
+
+.theme-dark .btn-add:hover {
+  background: rgba(91, 170, 138, 0.15);
+}
+
+.theme-dark .btn-small {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #aaa;
+}
+
+.theme-dark .recommended-model-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.theme-dark .recommended-model-btn:hover {
+  border-color: rgba(91, 170, 138, 0.3);
+  background: rgba(91, 170, 138, 0.06);
+}
+
+.theme-dark .recommended-model-btn .model-name {
+  color: #ddd;
+}
+
+.theme-dark .recommended-model-btn .model-desc {
+  color: #888;
+}
+
+.theme-dark .recommended-model-btn .model-size {
+  color: #666;
+}
+
+.theme-dark .pull-message {
+  color: #6BC4A0;
+}
+
+.theme-dark .result-msg {
+  background: rgba(91, 170, 138, 0.08);
+  color: #6BC4A0;
+}
+
+.theme-dark .error-msg {
+  background: rgba(232, 93, 93, 0.1);
+  color: #f87171;
+}
+
+.theme-dark .saved-msg {
+  background: rgba(91, 170, 138, 0.1);
+  color: #6BC4A0;
+}
+
+.theme-dark .loading-state {
+  color: #777;
+}
+
+/* ═══ Reduced Motion ═══ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1337,23 +1482,4 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-}
-
-/* ═══ Modal body scrollbar ═══ */
-.modal-body::-webkit-scrollbar {
-  width: 5px;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
-  border-radius: 3px;
-}
-
-.theme-dark .modal-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-/* ═══ Modal body max-height for scrolling ═══ */
-.modal-body {
-  max-height: calc(85vh - 120px);
 }

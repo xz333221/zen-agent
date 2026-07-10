@@ -107,7 +107,7 @@ onMounted(async () => {
   // 首次启动问候
   setTimeout(() => {
     bubble.value = {
-      text: '你好！我是小禅 🦉 点击我开始对话吧。',
+      text: '你好！我是小禅，点击我开始对话吧。',
       type: 'greeting',
       actionLabel: '开始对话',
       actionId: 'start-chat'

@@ -16,127 +16,173 @@ const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 // ── 语音输入状态 (T-020) ──
+// 使用 MediaRecorder + IPC Whisper API 替代不可用的 Web Speech API
 const isRecording = ref(false)
+const isTranscribing = ref(false)
 const voiceLang = ref<'zh-CN' | 'en-US'>('zh-CN')
 const voiceError = ref('')
 const waveformBars = ref<number[]>(new Array(24).fill(3))
 
-// SpeechRecognition 引用
-let recognition: any = null
+// MediaRecorder 相关引用
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+let audioStream: MediaStream | null = null
 let waveformInterval: ReturnType<typeof setInterval> | null = null
 
-// TypeScript 全局声明
-declare global {
-  interface Window {
-    SpeechRecognition: any
-    webkitSpeechRecognition: any
-  }
-}
-
-/** 获取 SpeechRecognition 构造函数 */
-function getSpeechRecognition(): any | null {
-  if (typeof window === 'undefined') return null
-  return window.SpeechRecognition || window.webkitSpeechRecognition || null
-}
-
-/** 检查是否支持语音识别 */
+/** 检查是否支持语音录制 */
 function isVoiceSupported(): boolean {
-  return getSpeechRecognition() !== null
+  return typeof navigator !== 'undefined' &&
+    typeof navigator.mediaDevices !== 'undefined' &&
+    typeof MediaRecorder !== 'undefined'
 }
 
-/** 开始录音 */
-function startRecording() {
-  const SR = getSpeechRecognition()
-  if (!SR) {
-    voiceError.value = '当前环境不支持 Web Speech API 语音识别，请直接输入文字'
-    setTimeout(() => { voiceError.value = '' }, 5000)
+/** 开始/停止录音 */
+async function startRecording() {
+  // 如果正在转写中，忽略
+  if (isTranscribing.value) return
+
+  // 如果正在录音，停止并转写
+  if (isRecording.value) {
+    await stopAndTranscribe()
     return
   }
 
-  // 如果正在录音，先停止
-  if (recognition) {
-    stopRecording()
-    return
-  }
-
-  recognition = new SR()
-  recognition.lang = voiceLang.value
-  recognition.continuous = true
-  recognition.interimResults = true
-
-  let finalTranscript = inputText.value
-
-  recognition.onresult = (event: any) => {
-    let interimTranscript = ''
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript
-      if (event.results[i].isFinal) {
-        finalTranscript += transcript
-      } else {
-        interimTranscript += transcript
-      }
-    }
-    // 更新输入框内容
-    inputText.value = finalTranscript + interimTranscript
-    autoResize()
-  }
-
-  recognition.onerror = (event: any) => {
-    if (event.error === 'no-speech') {
-      // 无语音输入，不报错
-    } else if (event.error === 'not-allowed') {
-      voiceError.value = '请允许麦克风访问权限'
-    } else if (event.error === 'network' || event.error === 'audio-capture') {
-      voiceError.value = '语音识别需要网络连接（Web Speech API 依赖在线服务）。请检查网络后重试，或直接输入文字'
-    } else if (event.error === 'service-not-allowed') {
-      voiceError.value = '语音识别服务不可用，请直接输入文字'
-    } else {
-      voiceError.value = `语音识别错误: ${event.error}。建议直接输入文字`
-    }
+  if (!isVoiceSupported()) {
+    voiceError.value = '当前环境不支持语音录制，请直接输入文字'
     setTimeout(() => { voiceError.value = '' }, 5000)
-    stopRecording()
-  }
-
-  recognition.onend = () => {
-    // 自动重启（continuous 模式下可能意外停止）
-    if (isRecording.value) {
-      try {
-        recognition.start()
-      } catch {
-        stopRecording()
-      }
-    }
+    return
   }
 
   try {
-    recognition.start()
+    // 请求麦克风权限
+    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    audioChunks = []
+
+    // 创建 MediaRecorder
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm'
+
+    mediaRecorder = new MediaRecorder(audioStream, { mimeType })
+
+    mediaRecorder.ondataavailable = (e: BlobEvent) => {
+      if (e.data.size > 0) {
+        audioChunks.push(e.data)
+      }
+    }
+
+    mediaRecorder.start()
     isRecording.value = true
     startWaveformAnimation()
   } catch (err) {
-    voiceError.value = '启动录音失败'
-    setTimeout(() => { voiceError.value = '' }, 3000)
+    const error = err as Error
+    if (error.name === 'NotAllowedError') {
+      voiceError.value = '请允许麦克风访问权限'
+    } else if (error.name === 'NotFoundError') {
+      voiceError.value = '未检测到麦克风设备'
+    } else {
+      voiceError.value = `启动录音失败: ${error.message || '未知错误'}`
+    }
+    setTimeout(() => { voiceError.value = '' }, 5000)
+    cleanupRecording()
   }
 }
 
-/** 停止录音 */
-function stopRecording() {
-  if (recognition) {
-    isRecording.value = false
-    try {
-      recognition.stop()
-    } catch {}
-    recognition = null
+/** 停止录音并进行语音转文字 */
+async function stopAndTranscribe() {
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    stopRecording()
+    return
   }
+
+  // 停止录音并等待最后的数据
+  const mimeType = mediaRecorder.mimeType || 'audio/webm'
+  const stopped = new Promise<void>((resolve) => {
+    mediaRecorder!.onstop = () => resolve()
+  })
+  mediaRecorder.stop()
+  await stopped
+
+  // 清理录音状态
+  isRecording.value = false
   stopWaveformAnimation()
+  cleanupRecording()
+
+  // 如果没有录到音频数据，直接返回
+  if (audioChunks.length === 0) {
+    voiceError.value = '未录到音频，请重试'
+    setTimeout(() => { voiceError.value = '' }, 3000)
+    return
+  }
+
+  // 合并音频块并转为 base64
+  const audioBlob = new Blob(audioChunks, { type: mimeType })
+  const audioBase64 = await blobToBase64(audioBlob)
+
+  // 调用主进程进行语音转文字
+  isTranscribing.value = true
+  try {
+    const langCode = voiceLang.value === 'zh-CN' ? 'zh' : 'en'
+    const result = await window.chatAPI.transcribe(audioBase64, mimeType, langCode)
+
+    if (result.success && result.text) {
+      // 将转写文字追加到输入框
+      const existing = inputText.value.trim()
+      inputText.value = existing
+        ? `${existing} ${result.text}`
+        : result.text
+      autoResize()
+    } else {
+      voiceError.value = result.error || '语音识别失败，请直接输入文字'
+      setTimeout(() => { voiceError.value = '' }, 5000)
+    }
+  } catch (err) {
+    const error = err as Error
+    voiceError.value = error.message || '语音识别请求失败，请直接输入文字'
+    setTimeout(() => { voiceError.value = '' }, 5000)
+  } finally {
+    isTranscribing.value = false
+    audioChunks = []
+  }
+}
+
+/** 停止录音（不转写） */
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.stop() } catch {}
+  }
+  isRecording.value = false
+  stopWaveformAnimation()
+  cleanupRecording()
+}
+
+/** 清理录音资源 */
+function cleanupRecording() {
+  if (audioStream) {
+    audioStream.getTracks().forEach(t => t.stop())
+    audioStream = null
+  }
+  mediaRecorder = null
+}
+
+/** Blob 转 base64 */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      const result = reader.result as string
+      // 去掉 data:audio/webm;base64, 前缀
+      const base64 = result.split(',')[1]
+      resolve(base64)
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
 }
 
 /** 切换语音语言 */
 function toggleVoiceLang() {
   voiceLang.value = voiceLang.value === 'zh-CN' ? 'en-US' : 'zh-CN'
-  if (isRecording.value) {
-    stopRecording()
-    startRecording()
-  }
 }
 
 /** 波形动画 */
@@ -158,7 +204,10 @@ function stopWaveformAnimation() {
 }
 
 onUnmounted(() => {
-  stopRecording()
+  if (isRecording.value) {
+    stopRecording()
+  }
+  cleanupRecording()
 })
 
 // ── 图片附件 (T-021) ──
@@ -376,11 +425,17 @@ function handleKeydown(e: KeyboardEvent) {
       <span class="waveform-label">正在录音... {{ voiceLang === 'zh-CN' ? '中文' : 'English' }}</span>
     </div>
 
+    <!-- 语音转写中状态 -->
+    <div v-if="isTranscribing" class="voice-waveform transcribing" data-testid="voice-transcribing">
+      <div class="transcribing-spinner"></div>
+      <span class="waveform-label">正在识别语音...</span>
+    </div>
+
     <!-- 图片预览区 (T-021) -->
     <div v-if="pendingImages.length > 0" class="image-preview-bar" data-testid="image-preview-bar">
       <div v-for="img in pendingImages" :key="img.id" class="image-preview-item">
         <img :src="`data:${img.mimeType};base64,${img.thumbnail || img.data}`" :alt="'图片'" class="preview-thumb" />
-        <button class="image-remove-btn" data-testid="btn-remove-image" @click="removeImage(img.id)">✕</button>
+        <button class="image-remove-btn" data-testid="btn-remove-image" @click="removeImage(img.id)"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
       </div>
     </div>
 
@@ -394,7 +449,7 @@ function handleKeydown(e: KeyboardEvent) {
           class="input-textarea"
           :class="{ 'drag-over': isDragOver }"
           data-testid="input-textarea"
-          :placeholder="isRecording ? '语音输入中...' : '输入消息... (Enter 发送, Shift+Enter 换行, 可拖拽/粘贴图片)'"
+          :placeholder="isRecording ? '语音输入中...再次点击麦克风结束' : isTranscribing ? '正在识别语音...' : '输入消息... (Enter 发送, Shift+Enter 换行, 可拖拽/粘贴图片)'"
           rows="1"
           :disabled="disabled && !streaming"
           @input="autoResize"
@@ -412,19 +467,23 @@ function handleKeydown(e: KeyboardEvent) {
           <!-- 麦克风 -->
           <button
             class="toolbar-btn"
-            :class="{ recording: isRecording }"
+            :class="{ recording: isRecording, transcribing: isTranscribing }"
             data-testid="btn-mic"
-            :title="isRecording ? '停止录音' : '语音输入'"
+            :title="isRecording ? '停止录音并识别' : isTranscribing ? '识别中...' : '语音输入'"
+            :disabled="isTranscribing"
             @click="startRecording"
           >
-            <svg v-if="!isRecording" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg v-if="!isRecording && !isTranscribing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
               <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
               <line x1="12" y1="19" x2="12" y2="23"/>
               <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
-            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <svg v-else-if="isRecording" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="spin">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
             </svg>
           </button>
 
@@ -654,6 +713,20 @@ function handleKeydown(e: KeyboardEvent) {
   animation: mic-pulse 1.5s ease-in-out infinite;
 }
 
+.toolbar-btn.transcribing {
+  background: var(--color-brand);
+  color: var(--text-on-brand);
+  opacity: 0.8;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
 @keyframes mic-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(232, 93, 93, 0.45); }
   50% { box-shadow: 0 0 0 6px rgba(232, 93, 93, 0); }
@@ -695,6 +768,24 @@ function handleKeydown(e: KeyboardEvent) {
   font-size: 13px;
   color: var(--color-red);
   font-weight: 500;
+}
+
+/* ═══ 语音转写中 ═══ */
+.voice-waveform.transcribing {
+  background: var(--color-brand-softer);
+}
+
+.voice-waveform.transcribing .waveform-label {
+  color: var(--color-brand);
+}
+
+.transcribing-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-brand);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 /* ═══ 语音错误提示 ═══ */

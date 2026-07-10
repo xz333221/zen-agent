@@ -234,7 +234,7 @@ function exportSessionsAsMarkdown(
 
     const messages = getMessages(session.id)
     for (const msg of messages) {
-      const role = msg.role === 'user' ? '👤 **你**' : msg.role === 'assistant' ? '🦉 **小禅**' : '⚙️ **系统**'
+      const role = msg.role === 'user' ? '**你**' : msg.role === 'assistant' ? '**小禅**' : '**系统**'
       const time = new Date(msg.timestamp).toLocaleTimeString('zh-CN')
       md += `### ${role}\n\n`
       md += `*${time}*\n\n`

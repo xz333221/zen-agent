@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useChatStore } from './stores/chat'
 import ChatMessage from './components/ChatMessage.vue'
 import InputBar from './components/InputBar.vue'
-import type { TraceStep, ExecutionTrace, ImageAttachment } from '@shared/types'
+import type { TraceStep, ExecutionTrace, ImageAttachment, Session } from '@shared/types'
 
 const store = useChatStore()
 
@@ -16,17 +16,11 @@ let dragStartX = 0
 let dragStartY = 0
 
 function onTitleMouseDown(e: MouseEvent) {
-  // 不拖拽按钮区域
   const target = e.target as HTMLElement
   if (target.closest('.title-btn')) return
-
   isDragging = true
   dragStartX = e.screenX
   dragStartY = e.screenY
-
-  // 通知主进程开始拖拽
-  // Electron 的 frameless window 可以用 -webkit-app-region: drag
-  // 但为了精确控制，我们用 CSS 方案
 }
 
 function onTitleMouseMove(e: MouseEvent) {
@@ -35,8 +29,6 @@ function onTitleMouseMove(e: MouseEvent) {
   const deltaY = e.screenY - dragStartY
   dragStartX = e.screenX
   dragStartY = e.screenY
-  // 通过 Electron 的 window.moveBy 移动
-  // 实际上 frameless window 可以直接用 CSS -webkit-app-region: drag
 }
 
 function onTitleMouseUp() {
@@ -52,6 +44,9 @@ async function handleSend(message: string, images?: ImageAttachment[]) {
 
   // 通过 IPC 发送到主进程
   await window.chatAPI.send(message, images)
+
+  // 发送后刷新会话列表
+  store.loadSessions()
 }
 
 // ── 停止生成 ──
@@ -82,6 +77,36 @@ watch(
   }
 )
 
+// ── 新建会话 ──
+async function handleNewSession() {
+  const session = await window.chatAPI.newSession()
+  store.setSessionId(session.sessionId)
+  store.clearMessages()
+  await store.loadSessions()
+}
+
+// ── 加载历史会话 ──
+async function handleLoadSession(sid: string) {
+  await store.loadSessionMessages(sid)
+  await scrollToBottom()
+}
+
+// ── 删除会话 ──
+async function handleDeleteSession(sid: string) {
+  await store.deleteSessionById(sid)
+}
+
+// ── 格式化时间 ──
+function formatTime(ts: number): string {
+  const now = Date.now()
+  const diff = now - ts
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 // ── IPC 事件监听 ──
 let unlistenChunk: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
@@ -99,6 +124,9 @@ onMounted(async () => {
   const session = await window.chatAPI.newSession()
   store.setSessionId(session.sessionId)
 
+  // 加载会话列表
+  await store.loadSessions()
+
   // 监听流式响应
   unlistenChunk = window.chatAPI.onResponseChunk((data) => {
     store.appendChunk(data.delta)
@@ -106,6 +134,7 @@ onMounted(async () => {
 
   unlistenDone = window.chatAPI.onResponseDone(() => {
     store.finishStreaming()
+    store.loadSessions()
   })
 
   unlistenError = window.chatAPI.onResponseError((error) => {
@@ -114,14 +143,13 @@ onMounted(async () => {
     store.messages.push({
       id: `msg-error-${Date.now()}`,
       role: 'system',
-      content: `⚠️ 错误: ${error.message}`,
+      content: `错误: ${error.message}`,
       timestamp: Date.now()
     })
   })
 
   // 监听执行追踪
   unlistenTraceStep = window.chatAPI.onTraceStep((step: TraceStep) => {
-    // 实时更新追踪步骤
     store.addLiveStep(step)
   })
 
@@ -134,6 +162,7 @@ onMounted(async () => {
     const session = await window.chatAPI.newSession()
     store.setSessionId(session.sessionId)
     store.clearMessages()
+    await store.loadSessions()
   })
 
   // 初始化主题
@@ -176,7 +205,19 @@ function openSettings() {
     <!-- ═══ 自定义标题栏 ═══ -->
     <div class="title-bar" data-testid="title-bar" @mousedown="onTitleMouseDown" @mousemove="onTitleMouseMove" @mouseup="onTitleMouseUp">
       <div class="title-left">
-        <span class="title-owl">🦉</span>
+        <button class="title-btn sidebar-toggle" title="切换侧边栏" @click="store.toggleSidebar()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <line x1="9" y1="3" x2="9" y2="21"/>
+          </svg>
+        </button>
+        <svg class="title-owl-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
+          <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
+          <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
+          <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+        </svg>
         <span class="title-text">Zen Agent</span>
       </div>
       <div class="title-right">
@@ -186,50 +227,122 @@ function openSettings() {
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
-        <button class="title-btn" data-testid="btn-new-session" title="新建对话" @click="store.clearMessages()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button class="title-btn" data-testid="btn-new-session" title="新建对话" @click="handleNewSession">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14M5 12h14"/>
           </svg>
         </button>
         <button class="title-btn is-close" data-testid="btn-close" title="关闭" @click="handleClose">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6L6 18M6 6l12 12"/>
           </svg>
         </button>
       </div>
     </div>
 
-    <!-- ═══ 消息列表 ═══ -->
-    <div class="message-list" data-testid="message-list" ref="messageListRef">
-      <!-- 空状态 -->
-      <div v-if="store.messages.length === 0" class="empty-state" data-testid="empty-state">
-        <div class="empty-owl" data-testid="empty-owl">🦉</div>
-        <p class="empty-title">你好，我是小禅</p>
-        <p class="empty-desc">你的自我进化 AI 桌面助手</p>
-        <div class="empty-suggestions">
-          <div class="suggestion-item">💡 帮我写一个 Vue 组件</div>
-          <div class="suggestion-item">📝 写一篇技术文章</div>
-          <div class="suggestion-item">🔍 搜索最新技术资讯</div>
-          <div class="suggestion-item">📊 分析一段数据</div>
+    <!-- ═══ 主体区域 ═══ -->
+    <div class="chat-body">
+      <!-- ═══ 左侧侧边栏 ═══ -->
+      <Transition name="sidebar">
+        <div v-if="!store.sidebarCollapsed" class="sidebar" data-testid="sidebar">
+          <div class="sidebar-header">
+            <span class="sidebar-title">对话历史</span>
+            <button class="sidebar-new-btn" title="新建对话" @click="handleNewSession">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            </button>
+          </div>
+          <div class="sidebar-list">
+            <div v-if="store.sessions.length === 0" class="sidebar-empty">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.3;">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span>暂无对话记录</span>
+            </div>
+            <div
+              v-for="session in store.sessions"
+              :key="session.id"
+              class="session-item"
+              :class="{ active: session.id === store.sessionId }"
+              @click="handleLoadSession(session.id)"
+            >
+              <svg class="session-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <div class="session-info">
+                <span class="session-title-text">{{ session.title || '新对话' }}</span>
+                <span class="session-meta">{{ formatTime(session.updatedAt) }} · {{ session.messageCount }} 条</span>
+              </div>
+              <button
+                class="session-delete"
+                title="删除"
+                @click.stop="handleDeleteSession(session.id)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
+      </Transition>
+
+      <!-- ═══ 消息列表 ═══ -->
+      <div class="chat-main">
+        <div class="message-list" data-testid="message-list" ref="messageListRef">
+          <!-- 空状态 -->
+          <div v-if="store.messages.length === 0" class="empty-state" data-testid="empty-state">
+            <div class="empty-owl" data-testid="empty-owl">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
+                <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
+                <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
+                <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+              </svg>
+            </div>
+            <p class="empty-title">你好，我是小禅</p>
+            <p class="empty-desc">你的自我进化 AI 桌面助手</p>
+            <div class="empty-suggestions">
+              <div class="suggestion-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                帮我写一个 Vue 组件
+              </div>
+              <div class="suggestion-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                写一篇技术文章
+              </div>
+              <div class="suggestion-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                搜索最新技术资讯
+              </div>
+              <div class="suggestion-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                分析一段数据
+              </div>
+            </div>
+          </div>
+
+          <!-- 消息列表 -->
+          <ChatMessage
+            v-for="msg in store.messages"
+            :key="msg.id"
+            :message="msg"
+            :live-steps="msg.streaming ? store.liveSteps : []"
+          />
+        </div>
+
+        <!-- ═══ 输入区 ═══ -->
+        <InputBar
+          :disabled="store.isStreaming"
+          :streaming="store.isStreaming"
+          @send="handleSend"
+          @stop="handleStop"
+        />
       </div>
-
-      <!-- 消息列表 -->
-      <ChatMessage
-        v-for="msg in store.messages"
-        :key="msg.id"
-        :message="msg"
-        :live-steps="msg.streaming ? store.liveSteps : []"
-      />
     </div>
-
-    <!-- ═══ 输入区 ═══ -->
-    <InputBar
-      :disabled="store.isStreaming"
-      :streaming="store.isStreaming"
-      @send="handleSend"
-      @stop="handleStop"
-    />
   </div>
 </template>
 
@@ -265,8 +378,12 @@ function openSettings() {
   gap: 8px;
 }
 
-.title-owl {
-  font-size: 20px;
+.sidebar-toggle {
+  -webkit-app-region: no-drag;
+}
+
+.title-owl-icon {
+  color: var(--color-brand);
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.08));
 }
 
@@ -312,6 +429,176 @@ function openSettings() {
   color: var(--color-red);
 }
 
+/* ═══ 主体区域 ═══ */
+.chat-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ═══ 侧边栏 ═══ */
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card-soft);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-right: 1px solid var(--surface-divider);
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sidebar-new-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.sidebar-new-btn:hover {
+  background: var(--color-brand);
+  color: var(--text-on-brand);
+  transform: scale(1.05);
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.sidebar-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
+
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: var(--text-meta);
+  font-size: 12px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  margin-bottom: 2px;
+  position: relative;
+}
+
+.session-item:hover {
+  background: var(--surface-tint-hover);
+}
+
+.session-item.active {
+  background: var(--color-brand-soft);
+}
+
+.session-item.active .session-title-text {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+
+.session-icon {
+  color: var(--text-meta);
+  flex-shrink: 0;
+}
+
+.session-item.active .session-icon {
+  color: var(--color-brand);
+}
+
+.session-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.session-title-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-meta {
+  font-size: 10px;
+  color: var(--text-meta);
+}
+
+.session-delete {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-meta);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.session-item:hover .session-delete {
+  opacity: 0.6;
+}
+
+.session-delete:hover {
+  opacity: 1 !important;
+  background: var(--color-red-soft);
+  color: var(--color-red);
+}
+
+/* ═══ 聊天主区域 ═══ */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
 /* ═══ 消息列表 ═══ */
 .message-list {
   flex: 1;
@@ -349,7 +636,7 @@ function openSettings() {
 }
 
 .empty-owl {
-  font-size: 64px;
+  color: var(--color-brand);
   margin-bottom: 18px;
   animation: float 4s cubic-bezier(0.32, 0.72, 0, 1) infinite;
   filter: drop-shadow(0 4px 12px rgba(91, 170, 138, 0.15));
@@ -386,6 +673,9 @@ function openSettings() {
 }
 
 .suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 14px 16px;
   border-radius: 12px;
   background: var(--surface-card);
@@ -409,5 +699,17 @@ function openSettings() {
 
 .suggestion-item:active {
   transform: translateY(0);
+}
+
+/* ═══ 侧边栏动画 ═══ */
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: all 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0;
+  opacity: 0;
 }
 </style>

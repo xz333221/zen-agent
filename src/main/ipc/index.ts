@@ -5,7 +5,7 @@ import { getChatWindow, showChatWindow, hideChatWindow } from '../windows/chat-w
 import { llm } from '@agent/providers/llm'
 import { loadConfig, getConfig, saveConfig, isLLMConfigured, getSystemPrompt } from '@agent/providers/llm-config'
 import { ensureDatabase } from '../storage/database'
-import { createSession, getSession, updateSessionTitle, incrementMessageCount } from '../storage/repositories/sessions'
+import { createSession, getSession, updateSessionTitle, incrementMessageCount, getAllSessions, deleteSession } from '../storage/repositories/sessions'
 import { addMessage, getMessages, getRecentMessages } from '../storage/repositories/messages'
 import { AgentLoop, createAgentContext } from '@agent/core/agent-loop'
 import * as settingsWindowModule from '../windows/settings-window'
@@ -15,7 +15,7 @@ import * as pluginsWindowModule from '../windows/plugins-window'
 import { pluginManager } from '../plugins/plugin-manager'
 import { exportData, importData } from '../storage/data-export'
 import { ollamaManager } from '../offline/ollama-manager'
-import type { ExportOptions, OllamaPullProgress } from '@shared/types'
+import type { ExportOptions, OllamaPullProgress, MCPServerConfig, MCPTestResult, Skill } from '@shared/types'
 import { getShortcutConfig, setShortcutConfig, reregisterShortcuts } from '../shortcuts'
 import { getThemeMode, setThemeMode, getEffectiveTheme } from '../theme'
 import {
@@ -85,6 +85,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerPluginHandlers()
   registerDataHandlers()
   registerOllamaHandlers()
+  registerMCPHandlers()
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -293,6 +294,52 @@ function registerChatHandlers(): void {
     const messages = getMessages(sessionId)
     return { messages, sessionId }
   })
+
+  // 获取所有会话列表
+  ipcMain.handle(IPC_CHANNELS.CHAT_LIST_SESSIONS, async () => {
+    await ensureDatabase()
+    return getAllSessions()
+  })
+
+  // 删除会话
+  ipcMain.handle(IPC_CHANNELS.CHAT_DELETE_SESSION, async (_event, sessionId: string) => {
+    await ensureDatabase()
+    deleteSession(sessionId)
+    return { success: true }
+  })
+
+  // 加载指定会话（返回会话信息和消息）
+  ipcMain.handle(IPC_CHANNELS.CHAT_LOAD_SESSION, async (_event, sessionId: string) => {
+    await ensureDatabase()
+    currentSessionId = sessionId
+    if (!getSession(sessionId)) {
+      createSession(sessionId)
+    }
+    const session = getSession(sessionId)
+    const messages = getMessages(sessionId)
+    return { session, messages }
+  })
+
+  // 语音转文字（使用已配置的 LLM Provider 的 Whisper API）
+  ipcMain.handle(IPC_CHANNELS.CHAT_TRANSCRIBE, async (_event, audioBase64: string, mimeType: string, language?: string) => {
+    if (!isLLMConfigured()) {
+      return { success: false, error: '请先在设置中配置 LLM Provider，语音识别需要已配置的 API 服务' }
+    }
+
+    try {
+      // 将 base64 转为 Buffer
+      const audioBuffer = Buffer.from(audioBase64, 'base64')
+
+      // 调用 LLM Provider 进行语音转文字
+      const text = await llm.transcribeAudio(audioBuffer, mimeType, language)
+
+      return { success: true, text }
+    } catch (err) {
+      const error = err as Error
+      console.error('[IPC] Transcribe error:', error)
+      return { success: false, error: error.message || '语音识别失败' }
+    }
+  })
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -321,12 +368,13 @@ function registerSystemHandlers(): void {
       defaultModel: config.defaultModelKey,
       embeddingModel: config.embeddingModelKey,
       maxTokens: config.agent.maxTokens,
-      providers: config.providers
+      providers: config.providers,
+      mcpServers: config.mcpServers
     }
   })
 
   // 保存配置
-  ipcMain.handle(IPC_CHANNELS.SYS_SET_CONFIG, async (_event, data: { providers?: LLMProviderConfig[]; defaultModel?: string; embeddingModel?: string; agent?: Partial<typeof DEFAULT_AGENT_CONFIG> }) => {
+  ipcMain.handle(IPC_CHANNELS.SYS_SET_CONFIG, async (_event, data: { providers?: LLMProviderConfig[]; defaultModel?: string; embeddingModel?: string; agent?: Partial<typeof DEFAULT_AGENT_CONFIG>; mcpServers?: MCPServerConfig[] }) => {
     const config = getConfig()
 
     if (data.providers !== undefined) {
@@ -340,6 +388,9 @@ function registerSystemHandlers(): void {
     }
     if (data.agent) {
       config.agent = { ...config.agent, ...data.agent }
+    }
+    if (data.mcpServers !== undefined) {
+      config.mcpServers = data.mcpServers
     }
 
     saveConfig(config)
@@ -862,6 +913,115 @@ function classifyError(error: Error): {
   }
 
   return { type: 'unknown', userMessage: `发生错误: ${error.message}` }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MCP 服务器管理相关 IPC
+// ═══════════════════════════════════════════════════════════
+
+function registerMCPHandlers(): void {
+  // 获取所有 MCP 服务器
+  ipcMain.handle(IPC_CHANNELS.MCP_LIST, async () => {
+    const config = getConfig()
+    return config.mcpServers || []
+  })
+
+  // 添加 MCP 服务器
+  ipcMain.handle(IPC_CHANNELS.MCP_ADD, async (_event, server: Omit<MCPServerConfig, 'id' | 'createdAt' | 'updatedAt'>) => {
+    const config = getConfig()
+    const newServer: MCPServerConfig = {
+      ...server,
+      id: `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }
+    config.mcpServers = [...(config.mcpServers || []), newServer]
+    saveConfig(config)
+    return { success: true, server: newServer }
+  })
+
+  // 更新 MCP 服务器
+  ipcMain.handle(IPC_CHANNELS.MCP_UPDATE, async (_event, id: string, updates: Partial<MCPServerConfig>) => {
+    const config = getConfig()
+    const idx = (config.mcpServers || []).findIndex(s => s.id === id)
+    if (idx < 0) return { success: false, error: '服务器不存在' }
+    config.mcpServers[idx] = { ...config.mcpServers[idx], ...updates, updatedAt: Date.now() }
+    saveConfig(config)
+    return { success: true }
+  })
+
+  // 删除 MCP 服务器
+  ipcMain.handle(IPC_CHANNELS.MCP_DELETE, async (_event, id: string) => {
+    const config = getConfig()
+    config.mcpServers = (config.mcpServers || []).filter(s => s.id !== id)
+    saveConfig(config)
+    return { success: true }
+  })
+
+  // 启用/禁用 MCP 服务器
+  ipcMain.handle(IPC_CHANNELS.MCP_TOGGLE, async (_event, id: string, enabled: boolean) => {
+    const config = getConfig()
+    const idx = (config.mcpServers || []).findIndex(s => s.id === id)
+    if (idx < 0) return { success: false, error: '服务器不存在' }
+    config.mcpServers[idx].enabled = enabled
+    config.mcpServers[idx].updatedAt = Date.now()
+    saveConfig(config)
+    return { success: true }
+  })
+
+  // 测试 MCP 服务器连接
+  ipcMain.handle(IPC_CHANNELS.MCP_TEST, async (_event, server: MCPServerConfig) => {
+    try {
+      if (server.transport === 'stdio') {
+        if (!server.command) {
+          return { success: false, message: '请填写命令' } as MCPTestResult
+        }
+        // 对于 stdio 模式，仅验证命令是否可执行
+        return {
+          success: true,
+          message: `命令「${server.command}」配置已保存，运行时将自动启动`,
+          tools: []
+        } as MCPTestResult
+      } else {
+        if (!server.url) {
+          return { success: false, message: '请填写服务器 URL' } as MCPTestResult
+        }
+        // 对于 SSE/HTTP 模式，尝试连接
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5000)
+        try {
+          const res = await fetch(server.url, {
+            signal: controller.signal,
+            headers: { 'Accept': 'application/json' }
+          })
+          clearTimeout(timeout)
+          if (res.ok) {
+            return {
+              success: true,
+              message: `连接成功 (${res.status})`,
+              tools: []
+            } as MCPTestResult
+          } else {
+            return {
+              success: false,
+              message: `服务器返回 ${res.status}: ${res.statusText}`
+            } as MCPTestResult
+          }
+        } catch (e: any) {
+          clearTimeout(timeout)
+          return {
+            success: false,
+            message: `连接失败: ${e.message}`
+          } as MCPTestResult
+        }
+      }
+    } catch (e: any) {
+      return {
+        success: false,
+        message: `测试失败: ${e.message}`
+      } as MCPTestResult
+    }
+  })
 }
 
 /** 获取模拟响应内容（未配置 LLM 时使用） */

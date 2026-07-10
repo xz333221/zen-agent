@@ -157,7 +157,7 @@ function onTitleMouseUp() {
     <div class="title-bar" data-testid="title-bar"
          @mousedown="onTitleMouseDown" @mousemove="onTitleMouseMove" @mouseup="onTitleMouseUp">
       <div class="title-left">
-        <span class="title-owl">🦉</span>
+        <svg class="title-owl" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="8.5" cy="10" r="1.5" fill="currentColor"/><circle cx="15.5" cy="10" r="1.5" fill="currentColor"/><path d="M12 14a3 3 0 0 0-3 3h6a3 3 0 0 0-3-3z"/></svg>
         <span class="title-text">插件管理</span>
       </div>
       <div class="title-right">
@@ -206,7 +206,7 @@ function onTitleMouseUp() {
 
       <!-- 空状态 -->
       <div v-if="filteredPlugins.length === 0" class="empty-state" data-testid="empty-plugins">
-        <div class="empty-icon">🔌</div>
+        <div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0V8z"/><path d="M12 18v4"/></svg></div>
         <p class="empty-title">暂无插件</p>
         <p class="empty-desc">点击 + 按钮安装插件</p>
       </div>
@@ -233,7 +233,8 @@ function onTitleMouseUp() {
                 @click="handleToggle(plugin.manifest.id, plugin.manifest.enabled)"
                 :title="plugin.manifest.enabled ? '禁用' : '启用'"
               >
-                {{ plugin.manifest.enabled ? '👁' : '🚫' }}
+                <svg v-if="plugin.manifest.enabled" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
               <button
                 class="btn-icon"
@@ -241,7 +242,7 @@ function onTitleMouseUp() {
                 @click="handleUninstall(plugin.manifest.id)"
                 title="卸载"
               >
-                🗑
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
           </div>
@@ -250,7 +251,7 @@ function onTitleMouseUp() {
             <span class="meta-item">作者: {{ plugin.manifest.author }}</span>
             <span class="meta-item">入口: {{ plugin.manifest.entry }}</span>
             <span class="meta-item status" :class="plugin.status">
-              {{ plugin.status === 'active' ? '✅ 活跃' : plugin.status === 'inactive' ? '⏸ 停用' : '❌ 错误' }}
+              {{ plugin.status === 'active' ? '活跃' : plugin.status === 'inactive' ? '停用' : '错误' }}
             </span>
           </div>
           <div v-if="plugin.error" class="plugin-error">{{ plugin.error }}</div>
@@ -275,7 +276,7 @@ function onTitleMouseUp() {
       <div class="modal-content">
         <div class="modal-header">
           <h3>安装插件</h3>
-          <button class="btn-icon" @click="showInstallModal = false">✕</button>
+          <button class="btn-icon" @click="showInstallModal = false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
         </div>
         <div class="modal-body">
           <div class="form-row">
@@ -355,7 +356,7 @@ function onTitleMouseUp() {
 }
 
 .title-left { display: flex; align-items: center; gap: 6px; }
-.title-owl { font-size: 16px; }
+.title-owl { color: #5BAA8A; flex-shrink: 0; }
 .title-text { font-size: 13px; font-weight: 600; color: #555; }
 .title-right { display: flex; gap: 4px; -webkit-app-region: no-drag; }
 

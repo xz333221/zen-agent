@@ -155,7 +155,7 @@ const typeLabels: Record<string, string> = {
     <!-- ═══ 标题栏 ═══ -->
     <div class="title-bar" data-testid="title-bar">
       <div class="title-left">
-        <span class="title-owl">🦉</span>
+        <svg class="title-owl" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="8.5" cy="10" r="1.5" fill="currentColor"/><circle cx="15.5" cy="10" r="1.5" fill="currentColor"/><path d="M12 14a3 3 0 0 0-3 3h6a3 3 0 0 0-3-3z"/></svg>
         <span class="title-text">记忆浏览</span>
       </div>
       <div class="title-right">
@@ -232,7 +232,7 @@ const typeLabels: Record<string, string> = {
             <span v-if="memory.memType" class="memory-mem-type">{{ memory.memType }}</span>
             <span class="memory-time">{{ formatTime(memory.createdAt) }}</span>
             <div class="memory-actions">
-              <button class="btn-icon" @click.stop="handleDelete(memory)" title="删除">🗑</button>
+              <button class="btn-icon" @click.stop="handleDelete(memory)" title="删除"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
             </div>
           </div>
           <div class="memory-content-text">
@@ -265,7 +265,7 @@ const typeLabels: Record<string, string> = {
       <div class="modal-content">
         <div class="modal-header">
           <h3>记忆详情</h3>
-          <button class="btn-icon" @click="showDetailModal = false">✕</button>
+          <button class="btn-icon" @click="showDetailModal = false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
         </div>
         <div class="modal-body">
           <div class="detail-row">
@@ -338,7 +338,7 @@ const typeLabels: Record<string, string> = {
       <div class="modal-content">
         <div class="modal-header">
           <h3>添加记忆</h3>
-          <button class="btn-icon" @click="showCreateModal = false">✕</button>
+          <button class="btn-icon" @click="showCreateModal = false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
         </div>
         <div class="modal-body">
           <div class="form-row">

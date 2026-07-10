@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { ExecutionTrace, TraceStep, StepType } from '@shared/types'
+import TraceIcon from './TraceIcon.vue'
+import StatusIcon from './StatusIcon.vue'
 
 const props = defineProps<{
   trace: ExecutionTrace
@@ -41,23 +43,22 @@ const summary = computed(() => {
   }
 })
 
-const stepIcons: Record<StepType, string> = {
-  intent: '📝',
-  memory: '🧠',
-  skill_match: '🔧',
-  think: '💭',
-  act: '🔍',
-  observe: '👁',
-  reflect: '🔄',
-  store: '💾',
-  stats: '📊',
-  complete: '✅',
-  plan: '📋',
-  delegate: '🤝'
-}
-
 // ── 复制步骤输出 ──
 const copiedId = ref<string | null>(null)
+const copiedAll = ref(false)
+
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+}
 
 async function copyStepOutput(step: TraceStep) {
   let text = ''
@@ -84,20 +85,95 @@ async function copyStepOutput(step: TraceStep) {
     default:
       text = JSON.stringify(detail, null, 2)
   }
-  try {
-    await navigator.clipboard.writeText(text)
-    copiedId.value = step.id
-    setTimeout(() => { copiedId.value = null }, 1500)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-    copiedId.value = step.id
-    setTimeout(() => { copiedId.value = null }, 1500)
+  await copyToClipboard(text)
+  copiedId.value = step.id
+  setTimeout(() => { copiedId.value = null }, 1500)
+}
+
+// ── 复制完整执行追踪 ──
+async function copyFullTrace() {
+  const lines: string[] = []
+  const t = props.trace
+  const duration = t.endTime ? ((t.endTime - t.startTime) / 1000).toFixed(1) : '...'
+  const totalTokens = t.stats.totalInputTokens + t.stats.totalOutputTokens
+  lines.push(`执行追踪 — ${t.steps.length} 步 · ${duration}s · ${totalTokens} tokens · $${t.stats.estimatedCost.toFixed(4)}`)
+  lines.push(`模型: ${t.stats.modelsUsed.join(' + ')}`)
+  lines.push('')
+
+  for (const step of t.steps) {
+    const dur = step.duration ? ` (${(step.duration / 1000).toFixed(1)}s)` : ''
+    const tokens = (step.inputTokens || step.outputTokens) ? ` [${(step.inputTokens || 0) + (step.outputTokens || 0)} tok]` : ''
+    const model = step.model ? ` {${step.model}}` : ''
+    lines.push(`[${step.index}] ${step.name}${dur}${tokens}${model}`)
+
+    const detail = step.detail as any
+    if (!detail) continue
+    switch (detail.type) {
+      case 'intent':
+        lines.push(`  输入: ${detail.userInput}`)
+        lines.push(`  分类: ${detail.classification} (${detail.complexity})`)
+        break
+      case 'memory':
+        lines.push(`  检索到 ${detail.retrieved.length} 条记忆`)
+        for (const mem of detail.retrieved) {
+          lines.push(`    - [${mem.score.toFixed(2)}] ${mem.content}`)
+        }
+        break
+      case 'skill_match':
+        for (const cand of detail.candidates) {
+          lines.push(`  - ${cand.name} (${cand.score.toFixed(2)}) ${cand.loaded ? '✓' : '✗'} ${cand.reason}`)
+        }
+        break
+      case 'think':
+        lines.push(`  推理: ${detail.reasoning}`)
+        lines.push(`  决策: ${detail.decision}`)
+        break
+      case 'act':
+        lines.push(`  工具: ${detail.toolName}`)
+        lines.push(`  参数: ${JSON.stringify(detail.parameters)}`)
+        lines.push(`  结果: ${detail.resultSummary}`)
+        break
+      case 'observe':
+        lines.push(`  分析: ${detail.analysis}`)
+        lines.push(`  完成: ${detail.isComplete ? '是' : '否'}`)
+        break
+      case 'reflect':
+        lines.push(`  自评: ${detail.selfScore}/5 — ${detail.scoreReason}`)
+        if (detail.strengths?.length) lines.push(`  优点: ${detail.strengths.join(', ')}`)
+        if (detail.weaknesses?.length) lines.push(`  不足: ${detail.weaknesses.join(', ')}`)
+        break
+      case 'store':
+        lines.push(`  情景记忆: ${detail.episodicMemoryId}`)
+        for (const mem of detail.newSemanticMemories) {
+          lines.push(`  - [${mem.memType}] ${mem.content} (${(mem.confidence * 100).toFixed(0)}%)`)
+        }
+        break
+      case 'stats':
+        lines.push(`  上下文: ${detail.contextBreakdown.total}/${detail.contextBreakdown.budget} tokens`)
+        break
+      case 'complete':
+        lines.push(`  总耗时: ${(detail.totalDuration / 1000).toFixed(1)}s`)
+        lines.push(`  工具调用: ${detail.toolCalls}, LLM 调用: ${detail.llmCalls}`)
+        break
+      case 'plan':
+        lines.push(`  用户请求: ${detail.userRequest}`)
+        for (const task of detail.tasks) {
+          lines.push(`    ${task.id}: ${task.name} [${task.agentType}] — ${task.status}`)
+        }
+        break
+      case 'delegate':
+        lines.push(`  任务: ${detail.taskName} (${detail.taskId}) — ${detail.status}`)
+        if (detail.result) {
+          lines.push(`  结果: ${typeof detail.result.data === 'string' ? detail.result.data : JSON.stringify(detail.result.data)}`)
+        }
+        break
+    }
+    lines.push('')
   }
+
+  await copyToClipboard(lines.join('\n'))
+  copiedAll.value = true
+  setTimeout(() => { copiedAll.value = false }, 1500)
 }
 
 function formatTokens(step: TraceStep): string {
@@ -129,11 +205,27 @@ function tokenBarWidth(value: number): string {
   <div class="execution-trace">
     <!-- ═══ Level 0: 折叠摘要行 ═══ -->
     <button class="trace-summary" @click="expanded = !expanded">
-      <span class="trace-toggle">{{ expanded ? '▾' : '▸' }}</span>
+      <svg class="trace-toggle" :class="{ rotated: expanded }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
       <span class="trace-label">执行详情</span>
       <span class="trace-meta">
-        {{ summary.steps }} 步 · {{ summary.duration }} · {{ summary.tokens }} tok · ${summary.cost }}
+        {{ summary.steps }} 步 · {{ summary.duration }} · {{ summary.tokens }} tok · ${{ summary.cost }}
       </span>
+      <button
+        class="copy-all-btn"
+        :class="{ copied: copiedAll }"
+        title="复制完整追踪"
+        @click.stop="copyFullTrace"
+      >
+        <svg v-if="copiedAll" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </button>
     </button>
 
     <!-- ═══ Level 1: 步骤列表 ═══ -->
@@ -146,11 +238,11 @@ function tokenBarWidth(value: number): string {
       >
         <!-- 步骤头部 -->
         <div class="step-header" role="button" tabindex="0" @click="toggleStep(step.id)" @keydown.enter="toggleStep(step.id)">
-          <span class="step-icon">{{ stepIcons[step.type] }}</span>
+          <TraceIcon :type="step.type" :size="15" class="step-icon" />
           <span class="step-index">{{ step.index }}</span>
           <span class="step-name">{{ step.name }}</span>
           <span class="step-status" :class="`status-${step.status}`">
-            {{ step.status === 'running' ? '⏳' : step.status === 'completed' ? '✅' : step.status === 'error' ? '❌' : '⏭️' }}
+            <StatusIcon :status="step.status" :size="13" />
           </span>
           <span class="step-meta">
             <span v-if="formatDuration(step)" class="meta-item">{{ formatDuration(step) }}</span>
@@ -162,7 +254,13 @@ function tokenBarWidth(value: number): string {
             title="复制输出"
             @click.stop="copyStepOutput(step)"
           >
-            {{ copiedId === step.id ? '✓' : '📋' }}
+            <svg v-if="copiedId === step.id" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
           </button>
         </div>
 
@@ -215,7 +313,12 @@ function tokenBarWidth(value: number): string {
           <!-- 技能匹配 -->
           <template v-if="step.detail.type === 'skill_match'">
             <div v-for="cand in step.detail.candidates" :key="cand.id" class="skill-candidate">
-              <span class="skill-status-icon">{{ cand.loaded ? '✅' : '❌' }}</span>
+              <svg v-if="cand.loaded" class="skill-status-icon icon-ok" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else class="skill-status-icon icon-err" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
               <span class="skill-name">{{ cand.name }}</span>
               <span class="skill-score">({{ cand.score.toFixed(2) }})</span>
               <span class="skill-desc">{{ cand.description }}</span>
@@ -268,7 +371,9 @@ function tokenBarWidth(value: number): string {
               <pre v-if="expandedDetails.has(step.id + '-result')" class="raw-data">{{ JSON.stringify(step.detail.result, null, 2) }}</pre>
 
               <div v-if="step.detail.requiresApproval" class="approval-badge">
-                {{ step.detail.approved ? '✅ 已批准' : '⏳ 等待批准' }}
+                <svg v-if="step.detail.approved" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                {{ step.detail.approved ? '已批准' : '等待批准' }}
               </div>
             </div>
           </template>
@@ -278,7 +383,11 @@ function tokenBarWidth(value: number): string {
             <p class="observe-text">{{ step.detail.analysis }}</p>
             <div class="detail-row">
               <span class="detail-label">完成:</span>
-              <span class="detail-value">{{ step.detail.isComplete ? '✅ 是' : '❌ 否' }}</span>
+              <span class="detail-value">
+                <svg v-if="step.detail.isComplete" class="icon-inline icon-ok" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg v-else class="icon-inline icon-err" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                {{ step.detail.isComplete ? '是' : '否' }}
+              </span>
             </div>
             <div v-if="step.detail.remainingSteps?.length" class="detail-row">
               <span class="detail-label">剩余:</span>
@@ -291,29 +400,41 @@ function tokenBarWidth(value: number): string {
             <div class="reflect-box">
               <div class="reflect-score">
                 自评:
-                <span v-for="i in 5" :key="i" :class="{ filled: i <= step.detail.selfScore }">★</span>
+                <svg v-for="i in 5" :key="i" :class="{ filled: i <= step.detail.selfScore }" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
               </div>
               <p class="reflect-reason">{{ step.detail.scoreReason }}</p>
               <div v-if="step.detail.strengths.length" class="reflect-list">
-                <span class="reflect-label positive">✅ 优点:</span>
+                <span class="reflect-label positive">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><polyline points="20 6 9 17 4 12"/></svg>
+                  优点:
+                </span>
                 <ul>
                   <li v-for="s in step.detail.strengths" :key="s">{{ s }}</li>
                 </ul>
               </div>
               <div v-if="step.detail.weaknesses.length" class="reflect-list">
-                <span class="reflect-label warning">⚠️ 不足:</span>
+                <span class="reflect-label warning">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  不足:
+                </span>
                 <ul>
                   <li v-for="w in step.detail.weaknesses" :key="w">{{ w }}</li>
                 </ul>
               </div>
               <div v-if="step.detail.improvements.length" class="reflect-list">
-                <span class="reflect-label info">💡 改进:</span>
+                <span class="reflect-label info">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px;"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
+                  改进:
+                </span>
                 <ul>
                   <li v-for="im in step.detail.improvements" :key="im">{{ im }}</li>
                 </ul>
               </div>
               <div v-if="step.detail.patternDetected" class="pattern-alert">
-                🔔 检测到重复模式，建议创建新技能
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px;"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                检测到重复模式，建议创建新技能
               </div>
             </div>
           </template>
@@ -333,7 +454,7 @@ function tokenBarWidth(value: number): string {
               <span class="mem-conf">({{ (mem.confidence * 100).toFixed(0) }}%)</span>
             </div>
             <div v-if="step.detail.skillProposal" class="skill-proposal">
-              <span class="proposal-icon">💡</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 4px; flex-shrink: 0;"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
               技能提议: {{ step.detail.skillProposal.skillName }}
               (置信度: {{ (step.detail.skillProposal.confidence * 100).toFixed(0) }}%)
             </div>
@@ -434,7 +555,8 @@ function tokenBarWidth(value: number): string {
               </button>
               <pre v-if="expandedDetails.has(step.id + '-result') && step.detail.result" class="raw-data">{{ typeof step.detail.result.data === 'string' ? step.detail.result.data : JSON.stringify(step.detail.result.data, null, 2) }}</pre>
               <div v-if="step.detail.error" class="delegate-error">
-                ❌ {{ step.detail.error }}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px; margin-right: 3px; flex-shrink: 0;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                {{ step.detail.error }}
               </div>
             </div>
           </template>
@@ -492,9 +614,15 @@ function tokenBarWidth(value: number): string {
 }
 
 .trace-toggle {
-  font-size: 10px;
-  width: 12px;
+  width: 10px;
+  height: 10px;
   color: var(--text-meta);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.trace-toggle.rotated {
+  transform: rotate(90deg);
 }
 
 .trace-label {
@@ -539,7 +667,8 @@ function tokenBarWidth(value: number): string {
 }
 
 .step-icon {
-  font-size: 14px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .step-index {
@@ -554,8 +683,15 @@ function tokenBarWidth(value: number): string {
 }
 
 .step-status {
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
+
+.status-running { color: var(--color-blue); }
+.status-completed { color: var(--color-brand); }
+.status-error { color: var(--color-red); }
+.status-skipped { color: var(--text-meta); }
 
 .step-meta {
   display: flex;
@@ -591,6 +727,9 @@ function tokenBarWidth(value: number): string {
 .detail-value {
   color: var(--text-primary);
   word-break: break-word;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .tag {
@@ -605,6 +744,13 @@ function tokenBarWidth(value: number): string {
 .complexity-low { background: var(--color-brand-soft); color: var(--color-brand); }
 .complexity-medium { background: var(--color-amber-soft); color: var(--color-amber); }
 .complexity-high { background: var(--color-red-soft); color: var(--color-red); }
+
+.icon-inline {
+  vertical-align: -1px;
+}
+
+.icon-ok { color: var(--color-brand); }
+.icon-err { color: var(--color-red); }
 
 /* 记忆条目 */
 .memory-item {
@@ -651,7 +797,7 @@ function tokenBarWidth(value: number): string {
   font-size: 11px;
 }
 
-.skill-status-icon { font-size: 12px; }
+.skill-status-icon { font-size: 12px; flex-shrink: 0; }
 .skill-name { font-weight: 600; color: var(--text-primary); }
 .skill-score { color: var(--text-meta); }
 .skill-desc { color: var(--text-secondary); flex: 1; }
@@ -688,7 +834,8 @@ function tokenBarWidth(value: number): string {
 }
 
 .approval-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   padding: 2px 8px;
   border-radius: 4px;
   background: var(--color-amber-soft);
@@ -715,9 +862,12 @@ function tokenBarWidth(value: number): string {
 
 .reflect-score {
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.reflect-score span {
+.reflect-score svg {
   color: var(--surface-border);
   font-size: 14px;
 }
@@ -739,6 +889,8 @@ function tokenBarWidth(value: number): string {
 .reflect-label {
   font-size: 11px;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
 }
 
 .reflect-label.positive { color: var(--color-brand); }
@@ -763,6 +915,8 @@ function tokenBarWidth(value: number): string {
   background: var(--color-amber-soft);
   color: var(--color-amber);
   font-size: 11px;
+  display: flex;
+  align-items: center;
 }
 
 /* Store */
@@ -795,6 +949,8 @@ function tokenBarWidth(value: number): string {
   border: 1px solid var(--color-amber);
   font-size: 11px;
   color: var(--color-amber);
+  display: flex;
+  align-items: center;
 }
 
 /* Stats */
@@ -984,6 +1140,42 @@ function tokenBarWidth(value: number): string {
   background: var(--color-red-soft);
   color: var(--color-red);
   font-size: 11px;
+  display: flex;
+  align-items: center;
+}
+
+/* ── 复制全部按钮 ── */
+
+.copy-all-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  flex-shrink: 0;
+  color: var(--text-meta);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+}
+
+.trace-summary:hover .copy-all-btn {
+  opacity: 0.6;
+}
+
+.copy-all-btn:hover {
+  opacity: 1 !important;
+  background: var(--surface-tint-hover);
+  color: var(--text-primary);
+}
+
+.copy-all-btn.copied {
+  opacity: 1 !important;
+  color: var(--color-brand);
 }
 
 /* ── 复制按钮 ── */
@@ -999,6 +1191,9 @@ function tokenBarWidth(value: number): string {
   transition: opacity 0.15s, background 0.15s;
   flex-shrink: 0;
   color: var(--text-meta);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .step-header:hover .copy-btn {

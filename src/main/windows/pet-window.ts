@@ -160,14 +160,14 @@ function showContextMenu() {
     },
     { type: 'separator' },
     {
-      label: sleeping ? '☀️ 唤醒' : '🌙 休眠',
+      label: sleeping ? '唤醒' : '休眠',
       click: () => {
         if (sleeping) {
           // 唤醒
           setPetState('idle')
           if (petWindow) {
             petWindow.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
-              text: '我醒啦！有什么可以帮你的吗？ 🦉',
+              text: '我醒啦！有什么可以帮你的吗？',
               type: 'greeting'
             })
           }
@@ -177,7 +177,7 @@ function showContextMenu() {
           hideChatWindow()
           if (petWindow) {
             petWindow.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
-              text: '晚安... Zzz 💤',
+              text: '晚安，我休息一下...',
               type: 'info'
             })
           }

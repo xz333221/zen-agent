@@ -352,6 +352,10 @@ export const IPC_CHANNELS = {
   CHAT_APPROVE_PLAN: 'chat:approve-plan',
   CHAT_APPROVE_TOOL: 'chat:approve-tool',
   CHAT_NEW_SESSION_NOTIFY: 'chat:new-session-notify',
+  CHAT_LIST_SESSIONS: 'chat:list-sessions',
+  CHAT_DELETE_SESSION: 'chat:delete-session',
+  CHAT_LOAD_SESSION: 'chat:load-session',
+  CHAT_TRANSCRIBE: 'chat:transcribe',
 
   // Main → Chat
   CHAT_RESPONSE_CHUNK: 'chat:response-chunk',
@@ -425,7 +429,15 @@ export const IPC_CHANNELS = {
   PLUGIN_INSTALL: 'plugin:install',
   PLUGIN_UNINSTALL: 'plugin:uninstall',
   PLUGIN_TOGGLE: 'plugin:toggle',
-  PLUGIN_GET: 'plugin:get'
+  PLUGIN_GET: 'plugin:get',
+
+  // MCP Server Management
+  MCP_LIST: 'mcp:list',
+  MCP_ADD: 'mcp:add',
+  MCP_UPDATE: 'mcp:update',
+  MCP_DELETE: 'mcp:delete',
+  MCP_TOGGLE: 'mcp:toggle',
+  MCP_TEST: 'mcp:test'
 } as const
 
 // ═══════════════════════════════════════════════════════════
@@ -624,4 +636,37 @@ export interface OllamaPullProgress {
   total?: number
   /** 状态消息 */
   message?: string
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MCP 服务器配置
+// ═══════════════════════════════════════════════════════════
+
+export interface MCPServerConfig {
+  id: string
+  /** 服务器名称 */
+  name: string
+  /** 传输方式 */
+  transport: 'stdio' | 'sse' | 'streamable-http'
+  /** SSE/HTTP 模式下的服务器 URL */
+  url?: string
+  /** stdio 模式下的命令 */
+  command?: string
+  /** stdio 模式下的参数 */
+  args?: string[]
+  /** 环境变量 */
+  env?: Record<string, string>
+  /** 是否启用 */
+  enabled: boolean
+  /** 创建时间 */
+  createdAt: number
+  /** 更新时间 */
+  updatedAt: number
+}
+
+export interface MCPTestResult {
+  success: boolean
+  message: string
+  /** 服务器提供的工具列表 */
+  tools?: string[]
 }

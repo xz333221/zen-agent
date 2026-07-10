@@ -119,7 +119,7 @@ export function updateTrayMenu(): void {
     },
     { type: 'separator' },
     {
-      label: isSleeping ? '☀️ 唤醒' : '🌙 休眠',
+      label: isSleeping ? '唤醒' : '休眠',
       click: () => {
         const petWin = getPetWindow()
         if (isSleeping) {
@@ -129,7 +129,7 @@ export function updateTrayMenu(): void {
           // 显示问候气泡
           if (petWin) {
             petWin.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
-              text: '我醒啦！有什么可以帮你的吗？ 🦉',
+              text: '我醒啦！有什么可以帮你的吗？',
               type: 'greeting'
             })
           }
@@ -141,7 +141,7 @@ export function updateTrayMenu(): void {
           hideChatWindow()
           if (petWin) {
             petWin.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
-              text: '晚安... Zzz 💤',
+              text: '晚安，我休息一下...',
               type: 'info'
             })
           }

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, ExecutionTrace, TraceStep, ImageAttachment } from '@shared/types'
+import type { ChatMessage, ExecutionTrace, TraceStep, ImageAttachment, Session } from '@shared/types'
 
 export const useChatStore = defineStore('chat', () => {
   // ── 状态 ──
@@ -9,6 +9,10 @@ export const useChatStore = defineStore('chat', () => {
   const currentStreamingId = ref<string | null>(null)
   const sessionId = ref<string>('')
   const liveSteps = ref<TraceStep[]>([])
+
+  // ── 会话列表 ──
+  const sessions = ref<Session[]>([])
+  const sidebarCollapsed = ref(false)
 
   // ── 计算属性 ──
   const messageCount = computed(() => messages.value.length)
@@ -96,12 +100,61 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = id
   }
 
+  /** 加载会话列表 */
+  async function loadSessions() {
+    try {
+      sessions.value = await window.chatAPI.listSessions()
+    } catch {
+      // 静默失败
+    }
+  }
+
+  /** 设置会话列表 */
+  function setSessions(list: Session[]) {
+    sessions.value = list
+  }
+
+  /** 切换侧边栏 */
+  function toggleSidebar() {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+  }
+
+  /** 加载指定会话的消息 */
+  async function loadSessionMessages(sid: string) {
+    try {
+      const result = await window.chatAPI.loadSession(sid)
+      sessionId.value = sid
+      messages.value = result.messages || []
+      currentStreamingId.value = null
+      isStreaming.value = false
+      liveSteps.value = []
+      return result
+    } catch {
+      return null
+    }
+  }
+
+  /** 删除会话 */
+  async function deleteSessionById(sid: string) {
+    try {
+      await window.chatAPI.deleteSession(sid)
+      sessions.value = sessions.value.filter(s => s.id !== sid)
+      if (sessionId.value === sid) {
+        clearMessages()
+      }
+    } catch {
+      // 静默失败
+    }
+  }
+
   return {
     messages,
     isStreaming,
     currentStreamingId,
     sessionId,
     liveSteps,
+    sessions,
+    sidebarCollapsed,
     messageCount,
     addUserMessage,
     startAssistantMessage,
@@ -110,6 +163,11 @@ export const useChatStore = defineStore('chat', () => {
     finishStreaming,
     attachTrace,
     clearMessages,
-    setSessionId
+    setSessionId,
+    loadSessions,
+    setSessions,
+    toggleSidebar,
+    loadSessionMessages,
+    deleteSessionById
   }
 })
