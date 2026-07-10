@@ -1,0 +1,47 @@
+node_modules/
+out/
+dist/
+data/
+*.db
+*.db-journal
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+e2e/report/
+**/e2e/report/
+**/e2e/test-results/
+**/playwright-report/
+test-results/
+
+# Claude / session scratch files
+.claude/
+*.codediff.txt
+
+# E2E / build / typecheck log artifacts
+build*.txt
+build_result*.txt
+e2e-test-*.txt
+typecheck_result*.txt
+
+# Electron / electron-builder artifacts (build/icon.* are kept in repo for electron-builder)
+release/
+*.exe
+*.dmg
+*.AppImage
+*.snap
+*.deb
+*.rpm
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cache
+.cache/
+.eslintcache
+*.tsbuildinfo

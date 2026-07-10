@@ -1,0 +1,78 @@
+# ═══ Zen Agent — Electron Builder 配置 ═══
+
+appId: com.zen-agent.app
+productName: Zen Agent
+copyright: Copyright © 2024 Zen Agent
+
+directories:
+  output: dist
+  buildResources: build
+
+# ── 文件包含/排除 ──
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.{ts,tsx,map,md}'
+  - '!src/**'
+  - '!agent/**'
+  - '!e2e/**'
+  - '!test-results/**'
+  - '!data/**'
+  - '!.gitignore'
+  - '!TASKS.md'
+  - '!electron.vite.config.ts'
+  - '!tsconfig*.json'
+  - '!e2e/**'
+  - '!playwright-report/**'
+
+# ── Windows 配置 ──
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: ${productName}-${version}-setup.${ext}
+
+# ── NSIS 安装程序配置 ──
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Zen Agent
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  deleteAppDataOnUninstall: false
+  displayLanguageSelector: false
+  language: '2052'  # 简体中文
+
+# ── macOS 配置（如有需要）──
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+# ── Linux 配置 ──
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: build/icon.png
+  category: Utility
+
+# ── 自动更新 ──
+publish:
+  provider: github
+  owner: zen-agent
+  repo: zen-agent
+  releaseType: release

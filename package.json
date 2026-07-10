@@ -1,0 +1,48 @@
+{
+  "name": "zen-agent",
+  "version": "0.1.0",
+  "description": "自我进化的 AI Agent 桌面应用 - 智慧小猫头鹰",
+  "main": "out/main/index.js",
+  "author": "zen-agent",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test:e2e": "npm run build && npx playwright test --config=e2e/playwright.config.ts",
+    "test:e2e:headed": "npm run build && npx playwright test --config=e2e/playwright.config.ts --headed",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "highlight.js": "^11.10.0",
+    "markdown-it": "^14.1.0",
+    "openai": "^4.77.0",
+    "pinia": "^2.3.0",
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.10.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "expect": "^30.4.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.1.10"
+  },
+  "build": {
+    "extends": "electron-builder.yml"
+  }
+}

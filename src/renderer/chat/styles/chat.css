@@ -1,0 +1,223 @@
+/* ═══ Zen Agent — 对话窗口全局样式 ═══ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+/* ═══ Design Tokens — Light ═══ */
+:root {
+  /* sage brand */
+  --color-brand: #5BAA8A;
+  --color-brand-hover: #4A9A7A;
+  --color-brand-soft: rgba(91, 170, 138, 0.10);
+  --color-brand-softer: rgba(91, 170, 138, 0.06);
+  --color-brand-border: rgba(91, 170, 138, 0.18);
+
+  /* secondary accents */
+  --color-amber: #F5A623;
+  --color-amber-soft: rgba(245, 166, 35, 0.10);
+  --color-red: #E85D5D;
+  --color-red-soft: rgba(232, 93, 93, 0.10);
+  --color-blue: #4682B4;
+  --color-blue-soft: rgba(70, 130, 180, 0.10);
+  --color-violet: #7B68EE;
+  --color-violet-soft: rgba(123, 104, 238, 0.08);
+
+  /* text — fixed contrast against surface */
+  --text-primary: #1a1a2e;
+  --text-secondary: #4b5563;
+  --text-meta: #6b7280;
+  --text-on-brand: #ffffff;
+
+  /* surfaces */
+  --surface-root-from: #fafbfc;
+  --surface-root-to: #ffffff;
+  --surface-card: #ffffff;
+  --surface-card-soft: rgba(255, 255, 255, 0.85);
+  --surface-tint: rgba(0, 0, 0, 0.03);
+  --surface-tint-hover: rgba(0, 0, 0, 0.05);
+  --surface-border: rgba(15, 23, 42, 0.08);
+  --surface-divider: rgba(15, 23, 42, 0.05);
+
+  /* shape */
+  --radius-card: 14px;
+  --radius-input: 12px;
+  --radius-button: 10px;
+  --radius-pill: 999px;
+
+  /* elevation */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 24px rgba(15, 23, 42, 0.06);
+
+  /* scrollbar */
+  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.32);
+}
+
+/* ═══ Design Tokens — Dark ═══ */
+.theme-dark {
+  --color-brand: #6BC4A0;
+  --color-brand-hover: #7AD0AC;
+  --color-brand-soft: rgba(107, 196, 160, 0.14);
+  --color-brand-softer: rgba(107, 196, 160, 0.08);
+  --color-brand-border: rgba(107, 196, 160, 0.22);
+
+  --color-amber: #F5A623;
+  --color-amber-soft: rgba(245, 166, 35, 0.14);
+  --color-red: #FF6B6B;
+  --color-red-soft: rgba(255, 107, 107, 0.14);
+  --color-blue: #6FA8DC;
+  --color-blue-soft: rgba(111, 168, 220, 0.14);
+  --color-violet: #9F8FFF;
+  --color-violet-soft: rgba(159, 143, 255, 0.14);
+
+  --text-primary: #e5e7eb;
+  --text-secondary: #cbd5e1;
+  --text-meta: #94a3b8;
+  --text-on-brand: #0f172a;
+
+  --surface-root-from: #0f0f1e;
+  --surface-root-to: #141428;
+  --surface-card: #1a1a2e;
+  --surface-card-soft: rgba(26, 26, 46, 0.85);
+  --surface-tint: rgba(255, 255, 255, 0.04);
+  --surface-tint-hover: rgba(255, 255, 255, 0.07);
+  --surface-border: rgba(255, 255, 255, 0.09);
+  --surface-divider: rgba(255, 255, 255, 0.06);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.45);
+
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.30);
+}
+
+/* ═══ 滚动条 ═══ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ═══ Accessibility — Focus Ring ═══ */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button:focus,
+textarea:focus,
+input:focus {
+  outline: none;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+textarea:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 0;
+  border-color: var(--color-brand);
+}
+
+/* ═══ Reduced Motion ═══ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ═══ Dark Theme — Root-level Overrides (centralized) ═══ */
+.theme-dark .chat-root {
+  background: linear-gradient(180deg, var(--surface-root-from) 0%, var(--surface-root-to) 100%);
+  border-color: var(--color-brand-border);
+  box-shadow: var(--shadow-card);
+}
+
+.theme-dark .title-bar {
+  background: var(--surface-card-soft);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-bottom-color: var(--surface-divider);
+}
+
+.theme-dark .empty-state {
+  color: var(--text-primary);
+}
+
+.theme-dark .suggestion-item {
+  background: var(--color-brand-softer);
+  border-color: var(--color-brand-border);
+  color: var(--text-secondary);
+}
+
+.theme-dark .suggestion-item:hover {
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand);
+}
+
+/* dark-mode table styles (centralized so component CSS doesn't need to repeat) */
+.theme-dark .message-content .md-table th,
+.theme-dark .message-content .md-table td {
+  border-color: var(--surface-border);
+}
+
+.theme-dark .message-content .md-table th {
+  background: var(--surface-tint);
+}
+
+.theme-dark .message-content .md-table tr:nth-child(even) td {
+  background: var(--surface-tint);
+}
+
+.theme-dark .message-content .inline-code {
+  background: var(--surface-tint);
+  color: #f38ba8;
+}
+
+.theme-dark .message-content blockquote {
+  border-left-color: var(--color-brand);
+  background: var(--color-brand-softer);
+  color: var(--text-meta);
+}
+
+.theme-dark .message-content a {
+  color: var(--color-brand);
+}
