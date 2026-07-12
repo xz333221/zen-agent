@@ -8,19 +8,23 @@
 import { registerTool } from '../core/action-executor'
 import { calculator } from './calculator'
 import { fileReader } from './file-reader'
+import { fileWriter } from './file-writer'
 import { codeExecutor } from './code-executor'
 import { webSearch } from './web-search'
 import { openUrl } from './open-url'
 import { browserTools } from './browser-tools'
+import { terminal } from './terminal'
 import type { ToolDef, ToolExecutor } from './types'
 
 // ── 所有内置工具列表 ──
 const builtinTools: ToolExecutor[] = [
   calculator,
   fileReader,
+  fileWriter,
   codeExecutor,
   webSearch,
   openUrl,
+  terminal,
   ...browserTools
 ]
 

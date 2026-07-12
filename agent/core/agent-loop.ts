@@ -382,6 +382,27 @@ export class AgentLoop {
 
       // 检查是否完成
       if (parsed.action === 'FINAL_ANSWER' || parsed.action === 'DIRECT_ANSWER') {
+        // ── 纠偏机制 ──
+        // 如果第一轮 LLM 就想直接回答（没用过任何工具），但用户的问题明显需要本地操作，
+        // 注入强提醒让 LLM 使用 terminal/file_reader 等工具，然后重试
+        if (i === 0 && reactSteps.length === 0 && this.shouldUseTool(userInput, toolNames)) {
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER without tools, but user input suggests tool use. Injecting nudge and retrying.`)
+
+          // 不输出给用户，直接注入一个观察结果让 LLM 重新思考
+          reactSteps.push({
+            think: parsed.thought,
+            action: 'FINAL_ANSWER',
+            actionInput: {},
+            observation: '[系统提醒] 你直接给出了最终答案，但你还没有尝试使用工具。你运行在用户的本地电脑上（不是远程服务器），你有 terminal 工具可以执行命令。请重新思考：用户想要什么操作？你应该用哪个工具？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 terminal 或 file_reader 等工具完成用户的请求。'
+          })
+
+          // 移除刚创建的 Think 步骤（因为要重试）
+          this.steps.pop()
+
+          // 不标记完成，继续循环
+          continue
+        }
+
         finalOutput = parsed.actionInput || parsed.content || thinkResponse
         console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER, output=${finalOutput.length}chars`)
 
@@ -545,6 +566,9 @@ export class AgentLoop {
     const hasWebSearch = toolNames.includes('web_search')
     const hasOpenUrl = toolNames.includes('open_url')
     const hasBrowser = toolNames.includes('browser_navigate')
+    const hasTerminal = toolNames.includes('terminal')
+    const hasFileReader = toolNames.includes('file_reader')
+    const hasFileWriter = toolNames.includes('file_writer')
     const toolsSection = toolNames.length > 0
       ? `\n\n可用工具: ${toolNames.join(', ')}`
       : '\n\n当前没有可用工具，请直接回答用户问题。'
@@ -583,6 +607,34 @@ export class AgentLoop {
 重要：这些工具操作的是本地有头浏览器，用户可以看到浏览器窗口。完成操作后记得调用 browser_close。`
       : ''
 
+    const terminalHint = hasTerminal
+      ? `\n\n💻 终端工具 — 你可以直接在用户电脑上执行命令：
+当用户要求你执行系统操作时，使用 terminal 工具。
+
+关键规则：
+- ⚠️ 设置了 cwd 参数后就不要在 command 里写 cd 命令！cwd 已经指定了工作目录。
+  正确：{"command": "git status", "cwd": "e:\\project"}
+  错误：{"command": "cd /e/project && git status", "cwd": "e:\\project"}  ← 多余的 cd
+- 路径必须使用当前操作系统的格式（Windows 用反斜杠，Linux/macOS 用正斜杠）
+- 执行多步操作时，每步都用 terminal 工具单独执行（如先 git add 再 git commit）
+- 如果用户没有指定工作目录，优先询问用户或使用用户之前提到的项目路径
+- 危险命令（如 rm -rf /, format, shutdown）会被自动拦截
+
+常见用法：
+- Git: {"command": "git status", "cwd": "e:\\project"}
+- Git: {"command": "git add -A", "cwd": "e:\\project"}
+- Git: {"command": "git commit -m \\"feat: xxx\\"", "cwd": "e:\\project"}
+- Git: {"command": "git push", "cwd": "e:\\project"}
+- npm: {"command": "npm install", "cwd": "e:\\project"}
+- 列出文件: {"command": "dir", "cwd": "e:\\project"}  (Windows)
+- 列出文件: {"command": "ls -la", "cwd": "/home/project"}  (Linux/macOS)`
+      : ''
+
+    const fileOpsHint = (hasFileReader || hasFileWriter)
+      ? `\n\n📁 文件操作工具 — 你可以读写本地文件：
+${hasFileReader ? '- file_reader: 读取文件内容（如 {"path": "e:\\project\\package.json"}）\n' : ''}${hasFileWriter ? '- file_writer: 写入文件（如 {"path": "e:\\project\\test.txt", "content": "内容", "mode": "write"}）\n  - mode: "write" 覆盖写入（默认）, "append" 追加\n  - 自动创建父目录\n' : ''}典型工作流：file_reader 读取 → 分析/修改 → file_writer 写入`
+      : ''
+
     return `${basePrompt}
 
 你是一个 ReAct Agent，使用 Think-Act-Observe 模式处理问题。
@@ -611,11 +663,15 @@ ACTION_INPUT: <JSON 格式的工具参数>
 - 搜索时使用当前年份（${new Date().getFullYear()}年）作为关键词，不要用旧年份
 - 当用户要求打开网站或链接时，使用 open_url 工具直接打开
 - 当用户要求浏览网页内容、操作网页时，使用 browser_navigate 等浏览器工具
+- 当用户要求执行命令、操作 git、运行代码时，使用 terminal 工具直接执行
+- 当用户要求查看文件内容时，使用 file_reader 工具读取
+- 当用户要求写入或修改文件时，使用 file_writer 工具写入
+- 执行多步操作时（如 git commit + push），每步单独调用工具，不要合并
 - 简单的常识问题或计算问题直接用 FINAL_ANSWER 回答
 - 复杂问题先思考再决定是否需要工具
 - 如果搜索结果不足以回答问题，可以多次搜索不同关键词
 - 搜索时使用简洁的关键词，中英文均可
-- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${openUrlHint}${browserHint}`
+- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${openUrlHint}${browserHint}${terminalHint}${fileOpsHint}`
   }
 
   /** 构建 Think 步骤的 prompt */
@@ -641,6 +697,59 @@ ACTION_INPUT: <JSON 格式的工具参数>
     prompt += '\n请继续推理。如果已有足够信息回答问题，使用 FINAL_ANSWER。'
 
     return prompt
+  }
+
+  /**
+   * 检测用户输入是否暗示需要使用工具
+   *
+   * 当用户要求执行本地操作（git, 运行代码, 提交, 推送等）时，
+   * LLM 不应该直接回答"我做不到"，而应该尝试使用 terminal/file_reader 等工具。
+   */
+  private shouldUseTool(userInput: string, availableTools: string[]): boolean {
+    if (availableTools.length === 0) return false
+
+    const input = userInput.toLowerCase()
+
+    // 终端操作关键词
+    const terminalKeywords = [
+      'git', 'commit', 'push', 'pull', 'merge', 'branch', '提交', '推送', '拉取',
+      'npm', 'yarn', 'pnpm', 'pip', 'install', '安装', '运行', '执行',
+      'node', 'python', 'go run', 'cargo', 'make',
+      '命令行', '终端', 'terminal', 'cmd', 'shell',
+      'build', '编译', '打包', 'deploy', '部署',
+      '启动', '重启', 'start', 'restart', 'stop',
+      'status', 'log', 'diff', '查看状态'
+    ]
+
+    // 文件操作关键词
+    const fileKeywords = [
+      '读取文件', '查看文件', '打开文件', '修改文件', '写入文件', '创建文件',
+      'read file', 'write file', 'edit file', '看一下文件',
+      'package.json', 'config', '配置文件', '.ts', '.js', '.py', '.vue',
+      '代码', '源码', '看看这个文件'
+    ]
+
+    // 搜索关键词（web_search）
+    const searchKeywords = [
+      '搜索', '查找', '最新', 'search', 'google', '百度',
+      '当前价格', '最新版本', '今天', '实时'
+    ]
+
+    const hasTerminal = availableTools.includes('terminal')
+    const hasFileReader = availableTools.includes('file_reader')
+    const hasFileWriter = availableTools.includes('file_writer')
+    const hasWebSearch = availableTools.includes('web_search')
+
+    if (hasTerminal && terminalKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
+    if ((hasFileReader || hasFileWriter) && fileKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
+    if (hasWebSearch && searchKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
+
+    // 检测路径模式（如 e:\, C:\, /home/ 等）
+    if (hasTerminal || hasFileReader) {
+      if (/[a-z]:\\/i.test(userInput) || /\/(home|usr|opt|var|tmp)\//.test(userInput)) return true
+    }
+
+    return false
   }
 
   /** 解析 ReAct 格式响应 */
