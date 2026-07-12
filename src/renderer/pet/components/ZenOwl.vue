@@ -1,39 +1,79 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
-import type { PetState } from '@shared/types'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import type { PetState, SystemResourceStatus } from '@shared/types'
 
 const props = defineProps<{
   state: PetState
 }>()
 
+// ── 系统资源状态（动画速度调整）──
+const resourceStatus = ref<SystemResourceStatus | null>(null)
+
 // ── 眨眼控制 ──
 const isBlinking = ref(false)
-let blinkTimer: ReturnType<typeof setInterval> | null = null
+let blinkTimer: ReturnType<typeof setTimeout> | null = null
+
+// 动画速度根据资源状态动态调整
+const animationSpeed = computed(() => resourceStatus.value?.animationSpeed ?? 1.0)
+const pressureLevel = computed(() => resourceStatus.value?.pressureLevel ?? 'calm')
+
+// 眨眼频率也会随速度变化（压力越大眨眼越频繁）
+const blinkInterval = computed(() => {
+  return Math.max(800, 3000 / animationSpeed.value) + Math.random() * 1000
+})
 
 function startBlinking() {
-  blinkTimer = setInterval(() => {
-    // idle 和 sleeping 状态下不随机眨眼
+  stopBlinking()
+  scheduleNextBlink()
+}
+
+function scheduleNextBlink() {
+  blinkTimer = setTimeout(() => {
+    // idle 和 listening 状态下随机眨眼
     if (props.state === 'idle' || props.state === 'listening') {
       isBlinking.value = true
       setTimeout(() => {
         isBlinking.value = false
-      }, 150)
+      }, 150 / animationSpeed.value)
     }
-  }, 3000 + Math.random() * 2000)
+    scheduleNextBlink()
+  }, blinkInterval.value)
 }
 
 function stopBlinking() {
   if (blinkTimer) {
-    clearInterval(blinkTimer)
+    clearTimeout(blinkTimer)
     blinkTimer = null
   }
 }
 
-onMounted(startBlinking)
-onUnmounted(stopBlinking)
+// 动画速度变化时重置眨眼定时器
+watch(animationSpeed, () => {
+  if (blinkTimer) {
+    startBlinking()
+  }
+})
+
+onMounted(() => {
+  startBlinking()
+
+  // 监听系统资源状态
+  if (window.petAPI.onResourceUpdate) {
+    window.petAPI.onResourceUpdate((data: SystemResourceStatus) => {
+      resourceStatus.value = data
+    })
+  }
+})
+
+onUnmounted(() => {
+  stopBlinking()
+})
 
 // ── 状态类名 ──
 const stateClass = computed(() => `state-${props.state}`)
+
+// ── 压力等级类名 ──
+const pressureClass = computed(() => `pressure-${pressureLevel.value}`)
 
 // ── 眼睛状态 ──
 const eyeClass = computed(() => {
@@ -46,7 +86,12 @@ const eyeClass = computed(() => {
 </script>
 
 <template>
-  <div class="zen-owl-container" :class="stateClass" data-testid="zen-owl">
+  <div
+    class="zen-owl-container"
+    :class="[stateClass, pressureClass]"
+    :style="{ '--anim-speed': animationSpeed }"
+    data-testid="zen-owl"
+  >
     <!-- 进化光晕 -->
     <div class="aura" v-if="state === 'evolving'"></div>
 
@@ -265,10 +310,11 @@ const eyeClass = computed(() => {
 }
 
 /* ═══ 状态动画 ═══ */
+/* --anim-speed 由 JS 动态设置 (1.0 ~ 3.0)，所有动画时长除以此值 */
 
 /* — idle: 缓慢呼吸 — */
 .state-idle .zen-owl {
-  animation: breathe 4s ease-in-out infinite;
+  animation: breathe calc(4s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes breathe {
@@ -278,7 +324,7 @@ const eyeClass = computed(() => {
 
 /* — listening: 轻微摇摆 — */
 .state-listening .zen-owl {
-  animation: sway 2s ease-in-out infinite;
+  animation: sway calc(2s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 .state-listening .tuft-left {
@@ -305,7 +351,7 @@ const eyeClass = computed(() => {
 
 /* — thinking: 歪头 — */
 .state-thinking .zen-owl {
-  animation: tilt 3s ease-in-out infinite;
+  animation: tilt calc(3s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes tilt {
@@ -329,7 +375,7 @@ const eyeClass = computed(() => {
   height: 6px;
   border-radius: 50%;
   background: #5BAA8A;
-  animation: thought-bounce 1.4s ease-in-out infinite;
+  animation: thought-bounce calc(1.4s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 .thought-dot:nth-child(2) { animation-delay: 0.2s; }
@@ -342,11 +388,11 @@ const eyeClass = computed(() => {
 
 /* — working: 翅膀抖动 — */
 .state-working .wing-left {
-  animation: wing-flap-left 0.4s ease-in-out infinite;
+  animation: wing-flap-left calc(0.4s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 .state-working .wing-right {
-  animation: wing-flap-right 0.4s ease-in-out infinite;
+  animation: wing-flap-right calc(0.4s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes wing-flap-left {
@@ -361,7 +407,7 @@ const eyeClass = computed(() => {
 
 /* — happy: 跳跃 — */
 .state-happy .zen-owl {
-  animation: bounce 0.6s ease-in-out infinite;
+  animation: bounce calc(0.6s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes bounce {
@@ -382,7 +428,7 @@ const eyeClass = computed(() => {
   position: absolute;
   font-size: 14px;
   color: #F5A623;
-  animation: star-fly 1s ease-out infinite;
+  animation: star-fly calc(1s / var(--anim-speed, 1)) ease-out infinite;
   animation-delay: var(--d);
 }
 
@@ -398,7 +444,7 @@ const eyeClass = computed(() => {
 
 /* — confused: 左右歪头 — */
 .state-confused .zen-owl {
-  animation: confused-tilt 1.5s ease-in-out infinite;
+  animation: confused-tilt calc(1.5s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes confused-tilt {
@@ -414,7 +460,7 @@ const eyeClass = computed(() => {
   font-size: 20px;
   font-weight: bold;
   color: #F5A623;
-  animation: confused-pulse 1s ease-in-out infinite;
+  animation: confused-pulse calc(1s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes confused-pulse {
@@ -424,7 +470,7 @@ const eyeClass = computed(() => {
 
 /* — sleeping: 上下起伏 — */
 .state-sleeping .zen-owl {
-  animation: sleep-breathe 4s ease-in-out infinite;
+  animation: sleep-breathe calc(4s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes sleep-breathe {
@@ -445,7 +491,7 @@ const eyeClass = computed(() => {
   color: #8a8a8a;
   font-style: italic;
   font-weight: bold;
-  animation: zzz-float 2s ease-in-out infinite;
+  animation: zzz-float calc(2s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 .sleep-zzz .z:nth-child(2) { animation-delay: 0.3s; font-size: 16px; }
@@ -459,7 +505,7 @@ const eyeClass = computed(() => {
 
 /* — evolving: 光晕脉冲 — */
 .state-evolving .zen-owl {
-  animation: evolve-pulse 2s ease-in-out infinite;
+  animation: evolve-pulse calc(2s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 .aura {
@@ -468,7 +514,7 @@ const eyeClass = computed(() => {
   height: 100%;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(91, 170, 138, 0.3) 0%, transparent 70%);
-  animation: aura-pulse 2s ease-in-out infinite;
+  animation: aura-pulse calc(2s / var(--anim-speed, 1)) ease-in-out infinite;
 }
 
 @keyframes aura-pulse {
@@ -503,4 +549,44 @@ const eyeClass = computed(() => {
 
 .eyes-thinking .eye-left .pupil { transform: translate(-2px, -3px); }
 .eyes-thinking .eye-right .pupil { transform: translate(-2px, -3px); }
+
+/* ═══ 压力等级视觉效果 ═══ */
+
+/* calm: 无额外效果 */
+
+/* moderate: 轻微暖色调 */
+.pressure-moderate .zen-owl {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25)) drop-shadow(0 0 6px rgba(245, 166, 35, 0.15));
+}
+
+/* high: 明显暖光，像运动后发热 */
+.pressure-high .zen-owl {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25)) drop-shadow(0 0 10px rgba(245, 166, 35, 0.4));
+}
+
+/* critical: 红色警报光晕 + 全身轻微震动 */
+.pressure-critical .zen-owl {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.25)) drop-shadow(0 0 14px rgba(255, 80, 80, 0.6));
+  animation: critical-shake 0.15s ease-in-out infinite !important;
+}
+
+@keyframes critical-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1.5px); }
+  75% { transform: translateX(1.5px); }
+}
+
+/* critical 状态下眨眼瞳孔变红（紧张感） */
+.pressure-critical .pupil {
+  fill: #FF4444 !important;
+  transition: fill 0.5s ease;
+}
+
+/* 恢复正常时瞳孔颜色过渡 */
+.pressure-calm .pupil,
+.pressure-moderate .pupil,
+.pressure-high .pupil {
+  fill: #F5A623;
+  transition: fill 0.5s ease;
+}
 </style>

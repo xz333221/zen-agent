@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, PetStateData } from '@shared/types'
+import { IPC_CHANNELS, PetStateData, SystemResourceStatus } from '@shared/types'
 
 const petAPI = {
   /** 通知主进程：宠物被点击 */
@@ -36,6 +36,13 @@ const petAPI = {
     const handler = (_event: Electron.IpcRendererEvent, bubble: PetStateData['bubble']) => callback(bubble)
     ipcRenderer.on(IPC_CHANNELS.PET_SHOW_BUBBLE, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.PET_SHOW_BUBBLE, handler)
+  },
+
+  /** 监听系统资源状态变化（用于动画速度调整） */
+  onResourceUpdate: (callback: (data: SystemResourceStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SystemResourceStatus) => callback(data)
+    ipcRenderer.on(IPC_CHANNELS.PET_RESOURCE_UPDATE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.PET_RESOURCE_UPDATE, handler)
   },
 
   /** 获取主题模式 */

@@ -17,6 +17,18 @@ export type PetState =
   | 'sleeping'     // 休眠
   | 'evolving'     // 进化中
 
+/** 系统资源状态 — 推送给宠物窗口用于动画速度调整 */
+export interface SystemResourceStatus {
+  /** CPU 使用率 (0-100) */
+  cpuPercent: number
+  /** 内存使用率 (0-100) */
+  memoryPercent: number
+  /** 综合压力等级 */
+  pressureLevel: 'calm' | 'moderate' | 'high' | 'critical'
+  /** 动画速度倍率 (0.5 - 3.0) */
+  animationSpeed: number
+}
+
 export interface PetStateData {
   state: PetState
   /** 气泡消息（可选） */
@@ -344,6 +356,7 @@ export const IPC_CHANNELS = {
   PET_STATE_CHANGE: 'pet:state-change',
   PET_SHOW_BUBBLE: 'pet:show-bubble',
   PET_HIDE_BUBBLE: 'pet:hide-bubble',
+  PET_RESOURCE_UPDATE: 'pet:resource-update',
 
   // Chat → Main
   CHAT_SEND: 'chat:send',

@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc'
 import { createTray } from './tray'
 import { registerShortcuts, unregisterAll } from './shortcuts'
 import { initTheme } from './theme'
+import { startResourceMonitor, stopResourceMonitor } from './system-resource-monitor'
 import { PetState } from '@shared/types'
 
 // ── Windows 控制台编码修复 ──
@@ -74,6 +75,9 @@ app.whenReady().then(async () => {
   // 初始化主题
   initTheme()
 
+  // 启动系统资源监控（宠物动画速度根据 CPU/内存 使用率动态变化）
+  startResourceMonitor()
+
   // macOS: 点击 dock 图标时重新显示
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -107,6 +111,7 @@ app.on('window-all-closed', () => {
 // ── 退出前清理 ──
 app.on('before-quit', () => {
   unregisterAll()
+  stopResourceMonitor()
   tray?.destroy()
 })
 
