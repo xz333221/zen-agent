@@ -81,8 +81,12 @@ export class MemoryManager {
     options: StoreMemoryOptions = {}
   ): Promise<EpisodicMemory | null> {
     try {
+      // 安全防护：确保 output 和 userInput 是字符串
+      const safeOutput = typeof output === 'string' ? output : String(output ?? '')
+      const safeInput = typeof userInput === 'string' ? userInput : String(userInput ?? '')
+
       // 生成用于检索的文本（用户意图 + 回复摘要）
-      const searchText = `${userInput}\n${output.slice(0, 500)}`
+      const searchText = `${safeInput}\n${safeOutput.slice(0, 500)}`
       const embedding = await generateEmbedding(searchText, options.signal)
 
       // 检查是否已有高度相似的记忆（去重）
@@ -97,9 +101,9 @@ export class MemoryManager {
       const memory: EpisodicMemory = {
         id: `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         timestamp: Date.now(),
-        userIntent: userInput,
+        userIntent: safeInput,
         actions,
-        outcome: output.slice(0, 2000),  // 限制存储长度
+        outcome: safeOutput.slice(0, 2000),  // 限制存储长度
         successScore,
         modelUsed: options.modelUsed || '',
         skillsUsed: options.skillsUsed || [],

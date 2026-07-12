@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
+import { execSync } from 'child_process'
 import { createPetWindow, getPetWindow } from './windows/pet-window'
 import { createChatWindow, getChatWindow, showChatWindow, hideChatWindow } from './windows/chat-window'
 import { registerIpcHandlers } from './ipc'
@@ -7,6 +8,24 @@ import { createTray } from './tray'
 import { registerShortcuts, unregisterAll } from './shortcuts'
 import { initTheme } from './theme'
 import { PetState } from '@shared/types'
+
+// ── Windows 控制台编码修复 ──
+// 同步切换 CMD 代码页为 UTF-8 (65001)，解决中文显示乱码问题
+// 必须同步执行，否则后续 console.log 仍然使用旧代码页
+if (process.platform === 'win32') {
+  try {
+    execSync('chcp 65001', { stdio: 'ignore' })
+    // 设置 stdout/stderr 为 UTF-8 编码
+    if (process.stdout && typeof (process.stdout as any).setDefaultEncoding === 'function') {
+      (process.stdout as any).setDefaultEncoding('utf-8')
+    }
+    if (process.stderr && typeof (process.stderr as any).setDefaultEncoding === 'function') {
+      (process.stderr as any).setDefaultEncoding('utf-8')
+    }
+  } catch {
+    // 忽略错误：在某些环境（如 CI）中可能无法切换代码页
+  }
+}
 
 // ── 全局引用 ──
 let tray: Tray | null = null
@@ -34,6 +53,9 @@ if (!isTestMode) {
 
 // ── 应用就绪 ──
 app.whenReady().then(async () => {
+  // 设置环境变量，让 agent 层能获取应用数据目录（用于浏览器专用 Profile）
+  process.env['ELECTRON_USER_DATA'] = app.getPath('userData')
+
   // 创建宠物窗口（常驻）
   createPetWindow()
 

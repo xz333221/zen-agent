@@ -132,6 +132,17 @@ async function copyFullTrace() {
         lines.push(`  工具: ${detail.toolName}`)
         lines.push(`  参数: ${JSON.stringify(detail.parameters)}`)
         lines.push(`  结果: ${detail.resultSummary}`)
+        // 添加搜索结果 URL
+        if (detail.toolName === 'web_search' && detail.result && (detail.result as any).results) {
+          if ((detail.result as any).engine) {
+            lines.push(`  搜索引擎: ${(detail.result as any).engine}`)
+          }
+          for (const r of (detail.result as any).results) {
+            lines.push(`    [${r.index}] ${r.title}`)
+            lines.push(`        URL: ${r.url}`)
+            if (r.snippet) lines.push(`        摘要: ${r.snippet}`)
+          }
+        }
         break
       case 'observe':
         lines.push(`  分析: ${detail.analysis}`)
@@ -365,8 +376,29 @@ function tokenBarWidth(value: number): string {
                 <span class="detail-label">结果摘要:</span>
                 <span class="detail-value">{{ step.detail.resultSummary }}</span>
               </div>
+
+              <!-- 搜索结果列表（web_search 专用） -->
+              <div v-if="step.detail.toolName === 'web_search' && step.detail.result && (step.detail.result as any).results" class="search-results-list">
+                <div v-if="(step.detail.result as any).engine" class="search-engine-badge">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  搜索引擎: {{ (step.detail.result as any).engine }}
+                </div>
+                <div v-for="r in (step.detail.result as any).results" :key="r.index" class="search-result-item">
+                  <div class="search-result-header">
+                    <span class="search-result-index">[{{ r.index }}]</span>
+                    <a :href="r.url" target="_blank" class="search-result-link" :title="r.url">{{ r.title }}</a>
+                  </div>
+                  <div class="search-result-url">{{ r.url }}</div>
+                  <div v-if="r.snippet" class="search-result-snippet">{{ r.snippet }}</div>
+                  <button v-if="r.content" class="expand-detail-btn" @click="toggleDetail(step.id + '-content-' + r.index)">
+                    {{ expandedDetails.has(step.id + '-content-' + r.index) ? '隐藏' : '查看' }}网页内容
+                  </button>
+                  <pre v-if="r.content && expandedDetails.has(step.id + '-content-' + r.index)" class="raw-data">{{ r.content }}</pre>
+                </div>
+              </div>
+
               <button class="expand-detail-btn" @click="toggleDetail(step.id + '-result')">
-                {{ expandedDetails.has(step.id + '-result') ? '隐藏' : '查看' }}完整结果
+                {{ expandedDetails.has(step.id + '-result') ? '隐藏' : '查看' }}完整 JSON
               </button>
               <pre v-if="expandedDetails.has(step.id + '-result')" class="raw-data">{{ JSON.stringify(step.detail.result, null, 2) }}</pre>
 
@@ -833,6 +865,75 @@ function tokenBarWidth(value: number): string {
   border-radius: 6px;
   background: var(--color-brand-softer);
   border-left: 3px solid var(--color-brand);
+}
+
+/* 搜索结果列表 */
+.search-results-list {
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--color-blue-soft);
+  color: var(--color-blue);
+  font-size: 10px;
+  font-weight: 500;
+  align-self: flex-start;
+}
+
+.search-result-item {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--surface-tint);
+  border: 1px solid var(--surface-divider);
+}
+
+.search-result-header {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.search-result-index {
+  color: var(--text-meta);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.search-result-link {
+  color: var(--color-brand);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.search-result-link:hover {
+  text-decoration: underline;
+}
+
+.search-result-url {
+  font-size: 10px;
+  color: var(--text-meta);
+  margin-top: 2px;
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-snippet {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.4;
 }
 
 .approval-badge {

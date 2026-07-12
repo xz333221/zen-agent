@@ -77,8 +77,8 @@ export class Coordinator {
     // ── Step 2: 执行计划 ──
     const results = await this.executePlan(plan, context)
 
-    // ── Step 3: 汇总结果 ──
-    const output = this.aggregateResults(userRequest, plan, results, context)
+      // ── Step 3: 汇总结果 ──
+    const output = await this.aggregateResults(userRequest, plan, results, context)
 
     return { output, plan, steps: this.steps }
   }
@@ -403,12 +403,12 @@ export class Coordinator {
   /**
    * 汇总子任务结果
    */
-  private aggregateResults(
+  private async aggregateResults(
     userRequest: string,
     plan: ExecutionPlan,
     _results: Map<string, TaskResult>,
     context: { messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> }
-  ): string {
+  ): Promise<string> {
     const completedTasks = plan.tasks.filter(t => t.status === 'completed' && t.result)
 
     if (completedTasks.length === 0) {
@@ -423,7 +423,7 @@ export class Coordinator {
 
     // 如果 LLM 可用，使用 LLM 汇总
     if (isLLMConfigured()) {
-      return this.aggregateWithLLM(userRequest, completedTasks, context)
+      return await this.aggregateWithLLM(userRequest, completedTasks, context)
     }
 
     // 规则汇总

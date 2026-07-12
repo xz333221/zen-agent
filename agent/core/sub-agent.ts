@@ -20,13 +20,14 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
     name: 'Code Agent',
     type: 'builtin',
     specialty: '编程、代码生成、调试、技术实现',
-    systemPrompt: `你是一个专业的编程助手。你擅长编写代码、调试问题、解释技术概念。
+    systemPrompt: `你是一个专业的编程助手。你擅长编写代码、调试问题、解释技术概念、浏览器自动化。
 回答规范：
 - 提供清晰的代码示例
 - 使用正确的语法高亮
 - 解释关键逻辑和设计决策
-- 关注代码质量和最佳实践`,
-    tools: ['code_executor', 'file_reader'],
+- 关注代码质量和最佳实践
+- 当需要操作浏览器时，使用 browser_navigate、browser_get_text、browser_click、browser_type、browser_screenshot 等工具`,
+    tools: ['code_executor', 'file_reader', 'web_search', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 8000,
@@ -109,8 +110,9 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 简洁明了，直击要点
 - 友好亲切的语调
 - 必要时提供示例
-- 坦诚面对不确定的问题`,
-    tools: [],
+- 坦诚面对不确定的问题
+- 当需要打开网页或操作浏览器时，使用 open_url 或 browser_navigate 等工具`,
+    tools: ['web_search', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -217,7 +219,7 @@ export class SubAgent {
   }
 
   /**
-   * 使用工具执行任务
+   * 使用工具执行任务（支持多步 ReAct 循环）
    */
   private async executeWithTool(
     task: PlanTask,
@@ -226,7 +228,7 @@ export class SubAgent {
     modelKey: string,
     signal?: AbortSignal
   ): Promise<TaskResult> {
-    // 让 LLM 决定使用哪个工具
+    const MAX_TOOL_STEPS = 8  // 子 Agent 最多 8 步工具调用
     const toolPrompt = `你需要完成以下任务。可用工具: ${tools.join(', ')}。
 
 任务: ${task.description}
@@ -236,81 +238,120 @@ THOUGHT: <分析>
 ACTION: <工具名称>
 ACTION_INPUT: <JSON 参数>
 
-如果不需要工具，直接回答：
+如果不需要工具或已完成所有步骤，直接回答：
 THOUGHT: <分析>
 ACTION: FINAL_ANSWER
-CONTENT: <回答>`
+CONTENT: <回答>
 
-    const response = await llm.chat({
-      messages: [...messages, { role: 'user', content: toolPrompt }],
-      modelKey,
-      temperature: 0.3,
-      maxTokens: this.def.maxTokens,
-      signal,
-      timeoutMs: 30 * 1000
-    })
+重要规则：
+- 浏览器任务典型流程: browser_navigate → browser_get_text/browser_screenshot → browser_click/browser_type → ... → browser_close
+- 每次只调用一个工具，等待结果后再决定下一步
+- 完成所有步骤后，使用 FINAL_ANSWER 给出总结`
 
-    // 解析是否需要工具
-    const actionMatch = response.match(/ACTION:\s*(\S+)/i)
-    const action = actionMatch ? actionMatch[1].trim() : 'FINAL_ANSWER'
+    let totalInputTokens = 0
+    let totalOutputTokens = 0
+    const conversationMessages = [...messages, { role: 'user' as const, content: toolPrompt }]
+    totalInputTokens += countTextTokens(toolPrompt)
 
-    if (action !== 'FINAL_ANSWER' && tools.includes(action)) {
+    for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+      if (signal?.aborted) {
+        return {
+          status: 'failure',
+          data: '操作被中止',
+          tokensUsed: totalInputTokens + totalOutputTokens,
+          modelUsed: modelKey,
+          steps: [],
+          error: 'aborted'
+        }
+      }
+
+      const response = await llm.chat({
+        messages: conversationMessages,
+        modelKey,
+        temperature: 0.3,
+        maxTokens: this.def.maxTokens,
+        signal,
+        timeoutMs: 30 * 1000
+      })
+
+      totalInputTokens += countTextTokens(conversationMessages.map(m => m.content).join(''))
+      totalOutputTokens += countTextTokens(response)
+
+      // 解析是否需要工具
+      const actionMatch = response.match(/ACTION:\s*(\S+)/i)
+      const action = actionMatch ? actionMatch[1].trim() : 'FINAL_ANSWER'
+
+      if (action === 'FINAL_ANSWER' || !tools.includes(action)) {
+        // 没有使用工具或已完成，直接返回 LLM 回答
+        const contentMatch = response.match(/CONTENT:\s*([\s\S]*?)$/i)
+        const finalOutput = contentMatch ? contentMatch[1].trim() : response
+
+        this.sendMessage(task.id, 'broadcast', finalOutput, 'result')
+
+        return {
+          status: 'success',
+          data: finalOutput,
+          tokensUsed: totalInputTokens + totalOutputTokens,
+          modelUsed: modelKey
+        }
+      }
+
       // 执行工具
       const actionInputMatch = response.match(/ACTION_INPUT:\s*([\s\S]*?)(?=\nTHOUGHT:|$)/i)
       let toolParams: Record<string, unknown> = {}
       try {
         toolParams = actionInputMatch ? JSON.parse(actionInputMatch[1].trim()) : {}
       } catch {
-        toolParams = { raw: actionInputMatch?.[1]?.trim() || '' }
+        const jsonMatch = actionInputMatch?.[1]?.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          try {
+            toolParams = JSON.parse(jsonMatch[0])
+          } catch {
+            toolParams = { raw: actionInputMatch?.[1]?.trim() || '' }
+          }
+        } else {
+          toolParams = { raw: actionInputMatch?.[1]?.trim() || '' }
+        }
       }
 
       const toolResult = await executeAction({
-        id: `subcall-${Date.now()}`,
+        id: `subcall-${Date.now()}-${step}`,
         toolId: action,
         parameters: toolParams
       }, signal)
 
-      // 将工具结果反馈给 LLM 生成最终回答
-      const finalPrompt = `工具 ${action} 执行结果:
-${toolResult.success ? toolResult.resultSummary : '失败: ' + toolResult.error}
+      // 将 LLM 回复和工具结果加入对话，继续下一轮
+      conversationMessages.push({ role: 'assistant', content: response })
+      conversationMessages.push({
+        role: 'user',
+        content: `工具 ${action} 执行结果:
+${toolResult.success ? toolResult.resultSummary : '失败: ' + (toolResult.error || toolResult.resultSummary)}
 
-请基于以上结果完成任务: ${task.description}`
-
-      const finalResponse = await llm.chat({
-        messages: [...messages, { role: 'user', content: finalPrompt }],
-        modelKey,
-        temperature: 0.5,
-        maxTokens: this.def.maxTokens,
-        signal,
-        timeoutMs: 30 * 1000
+请继续。如果已完成所有步骤，使用 FINAL_ANSWER 给出总结。`
       })
-
-      const inputTokens = countTextTokens(messages.map(m => m.content).join('')) + countTextTokens(toolPrompt) + countTextTokens(finalPrompt)
-      const outputTokens = countTextTokens(response) + countTextTokens(finalResponse)
-
-      this.sendMessage(task.id, 'broadcast', finalResponse, 'result')
-
-      return {
-        status: 'success',
-        data: finalResponse,
-        tokensUsed: inputTokens + outputTokens,
-        modelUsed: modelKey
-      }
+      totalInputTokens += countTextTokens(toolResult.resultSummary)
     }
 
-    // 没有使用工具，直接返回 LLM 回答
-    const contentMatch = response.match(/CONTENT:\s*([\s\S]*?)$/i)
-    const finalOutput = contentMatch ? contentMatch[1].trim() : response
+    // 循环耗尽，生成总结
+    const finalPrompt = `你已经使用了 ${MAX_TOOL_STEPS} 步工具调用。请基于以上所有结果，完成任务: ${task.description}`
+    const finalResponse = await llm.chat({
+      messages: [...conversationMessages, { role: 'user', content: finalPrompt }],
+      modelKey,
+      temperature: 0.5,
+      maxTokens: this.def.maxTokens,
+      signal,
+      timeoutMs: 30 * 1000
+    })
 
-    const inputTokens = countTextTokens(messages.map(m => m.content).join('')) + countTextTokens(toolPrompt)
-    const outputTokens = countTextTokens(response)
+    totalInputTokens += countTextTokens(finalPrompt)
+    totalOutputTokens += countTextTokens(finalResponse)
 
-    this.sendMessage(task.id, 'broadcast', finalOutput, 'result')
+    this.sendMessage(task.id, 'broadcast', finalResponse, 'result')
 
     return {
       status: 'success',
-      data: finalOutput,
-      tokensUsed: inputTokens + outputTokens,
+      data: finalResponse,
+      tokensUsed: totalInputTokens + totalOutputTokens,
       modelUsed: modelKey
     }
   }
@@ -328,6 +369,8 @@ ${toolResult.success ? toolResult.resultSummary : '失败: ' + toolResult.error}
     if (/读取|文件|read|file|打开/.test(desc)) return true
     // 代码执行
     if (/执行|运行|代码|execute|run|code/.test(desc)) return true
+    // 浏览器自动化任务
+    if (/浏览器|browser|网页|navigate|截图|screenshot|点击|click|输入框|type|滚动|scroll|网址|url/.test(desc)) return true
     return false
   }
 

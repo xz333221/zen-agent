@@ -1,4 +1,9 @@
 import { BrowserWindow, screen, ipcMain, Menu, app } from 'electron'
+
+// ── 拖拽状态（主进程轮询模式，避免 IPC 延迟导致卡顿） ──
+let dragPollTimer: NodeJS.Timeout | null = null
+let dragOffsetX = 0
+let dragOffsetY = 0
 import { join } from 'path'
 import { IPC_CHANNELS } from '@shared/types'
 import { isPetSleeping, updateTrayMenu } from '../tray'
@@ -79,16 +84,49 @@ export function createPetWindow(): BrowserWindow {
     petWindow?.show()
   })
 
-  // ── 拖拽支持 ──
-  // 渲染进程通过 IPC 发送拖拽事件，主进程移动窗口
-  ipcMain.on(IPC_CHANNELS.PET_DRAG, (_event, deltaX: number, deltaY: number) => {
+  // ── 拖拽支持（主进程轮询模式） ──
+  // 渲染进程只发送拖拽开始/结束，拖拽过程中主进程自行轮询鼠标位置
+  // 这样避免了每帧 IPC 通信的延迟，大幅提升流畅度
+  ipcMain.on(IPC_CHANNELS.PET_DRAG, (_event, _deltaX: number, _deltaY: number) => {
+    // 兼容旧接口：如果收到 delta，仍然处理（但主要走新的 start/end 模式）
     if (!petWindow) return
     const [currentX, currentY] = petWindow.getPosition()
-    petWindow.setPosition(currentX + deltaX, currentY + deltaY)
+    petWindow.setPosition(currentX + _deltaX, currentY + _deltaY)
   })
 
-  // ── 拖拽结束 → 保存位置 ──
+  // 拖拽开始：记录鼠标和窗口的偏移量，启动轮询定时器
+  ipcMain.on(IPC_CHANNELS.PET_DRAG_START, () => {
+    if (!petWindow) return
+    const cursorPos = screen.getCursorScreenPoint()
+    const [winX, winY] = petWindow.getPosition()
+    dragOffsetX = winX - cursorPos.x
+    dragOffsetY = winY - cursorPos.y
+
+    // 停止之前的轮询（如果有）
+    if (dragPollTimer) {
+      clearInterval(dragPollTimer)
+    }
+
+    // 高频轮询鼠标位置，直接移动窗口（~60fps）
+    dragPollTimer = setInterval(() => {
+      if (!petWindow || petWindow.isDestroyed()) {
+        if (dragPollTimer) {
+          clearInterval(dragPollTimer)
+          dragPollTimer = null
+        }
+        return
+      }
+      const pos = screen.getCursorScreenPoint()
+      petWindow.setPosition(pos.x + dragOffsetX, pos.y + dragOffsetY)
+    }, 16) // ~60fps
+  })
+
+  // ── 拖拽结束 → 停止轮询 + 保存位置 ──
   ipcMain.on(IPC_CHANNELS.PET_DRAG_END, () => {
+    if (dragPollTimer) {
+      clearInterval(dragPollTimer)
+      dragPollTimer = null
+    }
     if (!petWindow) return
     saveWindowState('pet', petWindow)
   })

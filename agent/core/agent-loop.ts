@@ -33,7 +33,7 @@ import type { SkillMatchResult } from '../skills/types'
 import type { AgentContext, AgentResult, AgentCallbacks, ReActStep } from './types'
 import type { TraceStep, ExecutionTrace, StepDetail, ThinkDetail, ObserveDetail, MemoryDetail, SkillMatchDetail } from '../../src/shared/types'
 
-const MAX_ITERATIONS = 10  // 最大循环次数
+const MAX_ITERATIONS = 15  // 最大循环次数
 
 // ── ReAct 解析正则 ──
 const THOUGHT_RE = /THOUGHT:\s*([\s\S]*?)(?=\nACTION:|$)/i
@@ -68,27 +68,54 @@ export class AgentLoop {
     this.modelsUsed.clear()
     this.signal = context.signal
 
+    console.log(`\n${'═'.repeat(60)}`)
+    console.log(`[AgentLoop] START — input="${userInput.slice(0, 80)}${userInput.length > 80 ? '...' : ''}"`)
+    console.log(`[AgentLoop] sessionId=${context.sessionId}, msgCount=${context.messages.length}`)
+
     try {
       // ── Step 1: 意图识别 ──
       this.callbacks.onStateChange?.('thinking')
+      const t1 = Date.now()
       const intentResult = await this.stepIntent(userInput, context)
+      console.log(`[AgentLoop] Step 1 (Intent) ✓ ${Date.now() - t1}ms — complexity=${intentResult.complexity}, requiresPlanning=${intentResult.requiresPlanning}`)
 
       // ── Step 2: 记忆检索（向量语义搜索） ──
+      const t2 = Date.now()
       this.retrievedMemories = await this.stepMemoryRetrieval(userInput, context)
+      console.log(`[AgentLoop] Step 2 (Memory) ✓ ${Date.now() - t2}ms — retrieved=${this.retrievedMemories.length} memories`)
 
       // ── Step 3: 技能匹配 ──
+      const t3 = Date.now()
       const skillStep = await this.stepSkillMatch(userInput, context)
+      console.log(`[AgentLoop] Step 3 (Skill) ✓ ${Date.now() - t3}ms — matched=${this.matchedSkills.length} skills`)
 
       // ── Step 3.5: 上下文管理（Token 预算 + 滑动窗口 + 摘要压缩） ──
+      const t35 = Date.now()
       this.managedContext = await this.stepContextManagement(userInput, context)
+      console.log(`[AgentLoop] Step 3.5 (Context) ✓ ${Date.now() - t35}ms — compressed=${this.managedContext?.compressed || false}`)
 
       // ── Step 4-6: ReAct 循环 或 Coordinator 多 Agent 协作 ──
       const reactSteps: ReActStep[] = []
       let finalOutput = ''
       let llmCallCount = 0
 
-      // 如果需要规划且复杂度高，使用 Coordinator 进行多 Agent 协作
-      if (intentResult.requiresPlanning && intentResult.complexity === 'high') {
+      // 检测是否为浏览器自动化任务 — 浏览器任务必须走 ReAct 循环（有完整的浏览器工具和多步调用能力）
+      const browserKeywords = [
+        '浏览器', 'browser', '打开网页', '打开网站', 'navigate', '网页内容',
+        '截图', 'screenshot', '点击按钮', '点击元素', 'click',
+        '输入框', '输入文字', 'type', '滚动页面', 'scroll',
+        'browser_navigate', 'browser_click', 'browser_get_text', 'browser_type',
+        'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'
+      ]
+      const isBrowserTask = browserKeywords.some(kw =>
+        userInput.toLowerCase().includes(kw.toLowerCase())
+      )
+
+      console.log(`[AgentLoop] Step 4 — isBrowserTask=${isBrowserTask}, requiresPlanning=${intentResult.requiresPlanning}, complexity=${intentResult.complexity}`)
+
+      // 如果需要规划且复杂度高，且不是浏览器任务，使用 Coordinator 进行多 Agent 协作
+      // 浏览器任务走 ReAct 循环，因为 Coordinator 的子 Agent 没有浏览器工具且不支持多步工具调用
+      if (intentResult.requiresPlanning && intentResult.complexity === 'high' && !isBrowserTask) {
         this.callbacks.onStateChange?.('working')
         const coordinator = new Coordinator(
           {
@@ -142,7 +169,9 @@ export class AgentLoop {
         }
       } else if (isLLMConfigured()) {
         // 使用 LLM 进行 ReAct 循环
+        const t4 = Date.now()
         const result = await this.runReActLoop(userInput, context, reactSteps, intentResult.complexity)
+        console.log(`[AgentLoop] Step 4 (ReAct) ✓ ${Date.now() - t4}ms — llmCalls=${result.llmCalls}, output=${result.output.length}chars`)
         finalOutput = result.output
         llmCallCount = result.llmCalls
       } else {
@@ -153,13 +182,19 @@ export class AgentLoop {
 
       // ── Step 7: 反思 ──
       this.callbacks.onStateChange?.('thinking')
-      await this.stepReflect(userInput, finalOutput, reactSteps, context)
+      // 安全防护：确保 finalOutput 是字符串（防止上游返回 Promise/对象等非字符串类型）
+      const safeFinalOutput = typeof finalOutput === 'string' ? finalOutput : String(finalOutput ?? '')
+      const t7 = Date.now()
+      await this.stepReflect(userInput, safeFinalOutput, reactSteps, context)
+      console.log(`[AgentLoop] Step 7 (Reflect) ✓ ${Date.now() - t7}ms`)
 
       // ── Step 8: 记忆存储 ──
-      await this.stepStore(userInput, finalOutput, context)
+      const t8 = Date.now()
+      await this.stepStore(userInput, safeFinalOutput, context)
+      console.log(`[AgentLoop] Step 8 (Store) ✓ ${Date.now() - t8}ms`)
 
       // ── Step 8.5: 进化检测（模式检测 + 技能生成） ──
-      await this.stepEvolution(userInput, finalOutput, intentResult.complexity, context)
+      await this.stepEvolution(userInput, safeFinalOutput, intentResult.complexity, context)
 
       // ── Step 8.6: Prompt 优化检测（负反馈阈值触发） ──
       await this.stepPromptOptimization(context)
@@ -191,6 +226,10 @@ export class AgentLoop {
       this.callbacks.onTraceComplete?.(trace)
       this.callbacks.onStateChange?.('happy')
 
+      const totalElapsed = Date.now() - this.startTime
+      console.log(`[AgentLoop] DONE ✓ total=${totalElapsed}ms, inputTokens=${this.totalInputTokens}, outputTokens=${this.totalOutputTokens}, llmCalls=${llmCallCount}`)
+      console.log(`${'═'.repeat(60)}\n`)
+
       return {
         content: finalOutput || '（Agent 未能生成响应）',
         trace,
@@ -202,7 +241,13 @@ export class AgentLoop {
         duration: Date.now() - this.startTime
       }
     } catch (err) {
-      this.callbacks.onError?.(err as Error)
+      const elapsed = Date.now() - this.startTime
+      const error = err as Error
+      console.error(`[AgentLoop] ERROR ✗ after ${elapsed}ms:`, error?.message || error)
+      if (error?.stack) {
+        console.error('[AgentLoop] stack:', error.stack.split('\n').slice(0, 8).join('\n'))
+      }
+      this.callbacks.onError?.(error)
       this.callbacks.onStateChange?.('confused')
       throw err
     }
@@ -289,8 +334,11 @@ export class AgentLoop {
     let isComplete = false
     let finalOutput = ''
 
+    console.log(`[AgentLoop] ReAct loop starting — complexity=${complexity}, maxIterations=${MAX_ITERATIONS}, tools=[${toolNames.join(', ')}]`)
+
     for (let i = 0; i < MAX_ITERATIONS && !isComplete; i++) {
       if (this.signal?.aborted) {
+        console.warn('[AgentLoop] ReAct loop aborted by signal')
         throw new Error('aborted')
       }
 
@@ -300,6 +348,9 @@ export class AgentLoop {
       const thinkPrompt = this.buildThinkPrompt(userInput, reactSteps, toolNames)
       llmCalls++
       this.modelsUsed.add(config.defaultModelKey)
+
+      console.log(`[AgentLoop] ReAct iteration ${i + 1}/${MAX_ITERATIONS} — Think step starting...`)
+      const thinkStart = Date.now()
 
       const thinkResponse = await llm.chat({
         messages: [
@@ -311,14 +362,16 @@ export class AgentLoop {
         temperature: 0.3,
         maxTokens: Math.min(config.agent.outputReserve * 2, 8000),
         signal: this.signal,
-        timeoutMs: 30 * 1000
+        timeoutMs: 120 * 1000  // 120s — 之前 30s 太短导致超时被误判为 "已停止生成"
       })
 
+      const thinkElapsed = Date.now() - thinkStart
       this.totalInputTokens += countTextTokens(finalSystemPrompt) + countTextTokens(thinkPrompt)
       this.totalOutputTokens += countTextTokens(thinkResponse)
 
       // 解析 ReAct 响应
       const parsed = this.parseReActResponse(thinkResponse)
+      console.log(`[AgentLoop] ReAct iteration ${i + 1} — Think ✓ ${thinkElapsed}ms, action=${parsed.action}, response=${thinkResponse.length}chars`)
 
       // 创建 Think 步骤
       this.createThinkStep(
@@ -330,6 +383,7 @@ export class AgentLoop {
       // 检查是否完成
       if (parsed.action === 'FINAL_ANSWER' || parsed.action === 'DIRECT_ANSWER') {
         finalOutput = parsed.actionInput || parsed.content || thinkResponse
+        console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER, output=${finalOutput.length}chars`)
 
         // 流式输出最终回答
         if (finalOutput) {
@@ -355,11 +409,48 @@ export class AgentLoop {
       this.callbacks.onStateChange?.('working')
 
       if (parsed.action && toolNames.includes(parsed.action)) {
+        console.log(`[AgentLoop] ReAct iteration ${i + 1} — executing tool: ${parsed.action}`)
         let toolParams: Record<string, unknown> = {}
-        try {
-          toolParams = parsed.actionInput ? JSON.parse(parsed.actionInput) : {}
-        } catch {
-          toolParams = { raw: parsed.actionInput }
+        if (parsed.actionInput) {
+          try {
+            toolParams = JSON.parse(parsed.actionInput)
+          } catch {
+            // JSON 解析失败，尝试从文本中提取 JSON 对象
+            const jsonMatch = parsed.actionInput.match(/\{[\s\S]*\}/)
+            if (jsonMatch) {
+              try {
+                toolParams = JSON.parse(jsonMatch[0])
+              } catch {
+                // 仍然失败，尝试提取 query 字段
+                const queryMatch = parsed.actionInput.match(/"query"\s*:\s*"([^"]+)"/i)
+                if (queryMatch) {
+                  toolParams = { query: queryMatch[1] }
+                } else {
+                  // 最后回退：将整个文本作为 query（适用于 web_search 等工具）
+                  const cleaned = parsed.actionInput
+                    .replace(/ACTION_INPUT:\s*/i, '')
+                    .replace(/ACTION:\s*\S+/i, '')
+                    .replace(/THOUGHT:[\s\S]*$/i, '')
+                    .replace(/CONTENT:[\s\S]*$/i, '')
+                    .replace(/[{}\[\]"]/g, '')
+                    .trim()
+                  if (cleaned) {
+                    toolParams = { query: cleaned }
+                  } else {
+                    toolParams = { raw: parsed.actionInput }
+                  }
+                }
+              }
+            } else {
+              // 没有 JSON 对象，尝试作为纯文本 query
+              const cleaned = parsed.actionInput.trim()
+              if (cleaned && !cleaned.includes('\n')) {
+                toolParams = { query: cleaned }
+              } else {
+                toolParams = { raw: parsed.actionInput }
+              }
+            }
+          }
         }
 
         const toolCall = {
@@ -368,10 +459,34 @@ export class AgentLoop {
           parameters: toolParams
         }
 
+        const toolStart = Date.now()
         const toolResult = await executeAction(toolCall, this.signal)
+        console.log(`[AgentLoop] ReAct iteration ${i + 1} — tool ${parsed.action} ✓ ${Date.now() - toolStart}ms, success=${toolResult.success}`)
 
         // 创建 Act 步骤
         this.createActStep(parsed.action, toolParams, toolResult)
+
+        // 构建详细的观察结果（包含实际搜索内容，供 LLM 后续推理使用）
+        let observationText = toolResult.resultSummary
+        if (toolResult.success && toolResult.result && typeof toolResult.result === 'object') {
+          const result = toolResult.result as { engine?: string; results?: Array<{ index?: number; title?: string; url?: string; snippet?: string; content?: string }> }
+          if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+            const engineInfo = result.engine ? `（来源: ${result.engine}）` : ''
+            observationText = `${toolResult.resultSummary}${engineInfo}\n\n搜索结果详情：`
+            for (const r of result.results) {
+              observationText += `\n[${r.index || '?'}] ${r.title || '(无标题)'}\n`
+              observationText += `  链接: ${r.url || ''}\n`
+              if (r.snippet) {
+                observationText += `  摘要: ${r.snippet}\n`
+              }
+              if (r.content) {
+                // 截取前 800 字符，避免上下文过长
+                const contentSnippet = r.content.length > 800 ? r.content.slice(0, 800) + '...' : r.content
+                observationText += `  内容: ${contentSnippet}\n`
+              }
+            }
+          }
+        }
 
         // 创建 Observe 步骤
         const observeDetail: ObserveDetail = {
@@ -388,11 +503,12 @@ export class AgentLoop {
           think: parsed.thought,
           action: parsed.action,
           actionInput: toolParams,
-          observation: toolResult.resultSummary
+          observation: observationText
         })
       } else {
         // 未知动作，当作最终回答
         finalOutput = parsed.content || parsed.thought || thinkResponse
+        console.log(`[AgentLoop] ReAct iteration ${i + 1} — unknown action "${parsed.action}", treating as final answer`)
         if (finalOutput) {
           const chunks = this.splitIntoChunks(finalOutput, 3)
           for (const chunk of chunks) {
@@ -415,6 +531,7 @@ export class AgentLoop {
 
     // 如果循环结束仍未完成，生成一个总结
     if (!isComplete) {
+      console.warn(`[AgentLoop] ReAct loop exhausted after ${MAX_ITERATIONS} iterations without completion`)
       finalOutput = this.getLoopExhaustedResponse(userInput, reactSteps)
       this.callbacks.onChunk?.(finalOutput)
     }
@@ -425,13 +542,53 @@ export class AgentLoop {
   /** 构建 ReAct 系统提示词 */
   private buildReActSystemPrompt(toolNames: string[]): string {
     const basePrompt = getSystemPrompt()
+    const hasWebSearch = toolNames.includes('web_search')
+    const hasOpenUrl = toolNames.includes('open_url')
+    const hasBrowser = toolNames.includes('browser_navigate')
     const toolsSection = toolNames.length > 0
       ? `\n\n可用工具: ${toolNames.join(', ')}`
       : '\n\n当前没有可用工具，请直接回答用户问题。'
 
+    const webSearchHint = hasWebSearch
+      ? `\n\n⚠️ 重要规则 — 何时必须使用 web_search 工具：
+- 当用户询问最新、当前、实时信息时（如"最新模型""当前价格""今天新闻"）
+- 当你的训练数据可能过时，无法确保信息准确时
+- 当用户明确要求搜索或查询外部信息时
+- 当涉及版本号、发布日期、产品规格等可能变化的信息时
+对于以上情况，必须先使用 web_search 搜索获取最新信息，再基于搜索结果回答。
+不要凭记忆回答可能过时的信息，这比承认不确定更糟糕。`
+      : ''
+
+    const openUrlHint = hasOpenUrl
+      ? `\n\n⚠️ 重要规则 — 何时使用 open_url 工具：
+- 当用户要求你打开某个网站、网页或链接时（如"打开微信读书""帮我打开 GitHub"）
+- 当用户要求在浏览器中打开某个网址时
+- 使用 open_url 工具直接打开 URL，不要只告诉用户方法
+- open_url 的参数是 {"url": "https://..."}，URL 必须包含 http:// 或 https:// 前缀`
+      : ''
+
+    const browserHint = hasBrowser
+      ? `\n\n🌐 浏览器自动化工具 — 你可以完全控制浏览器：
+当用户要求你浏览网页、操作网页、获取网页内容时，使用浏览器工具：
+1. browser_navigate: 打开网页（如 {"url": "https://weread.qq.com/"}）
+2. browser_get_text: 获取页面文本内容（如 {"selector": "#content"}，留空获取整页）
+3. browser_click: 点击元素（如 {"selector": "button.submit"}）
+4. browser_type: 输入文字（如 {"selector": "input#search", "text": "关键词", "submit": true}）
+5. browser_screenshot: 截图保存（如 {"fullPage": false}）
+6. browser_eval: 执行 JS（如 {"code": "document.title"}）
+7. browser_scroll: 滚动页面（如 {"direction": "down", "amount": 500}）
+8. browser_close: 关闭浏览器
+
+典型工作流：browser_navigate → browser_get_text/browser_screenshot → browser_click/browser_type → ... → browser_close
+重要：这些工具操作的是本地有头浏览器，用户可以看到浏览器窗口。完成操作后记得调用 browser_close。`
+      : ''
+
     return `${basePrompt}
 
 你是一个 ReAct Agent，使用 Think-Act-Observe 模式处理问题。
+
+⏰ 当前时间: ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}（${new Date().toLocaleDateString('en-US', { weekday: 'long' })}）
+注意：搜索时请使用与当前时间匹配的关键词，不要用过时的年份。
 
 请严格按照以下格式回复：
 
@@ -442,12 +599,23 @@ CONTENT: <给用户的最终回答>
 ${toolNames.length > 0 ? `如果需要使用工具：
 THOUGHT: <分析为什么需要工具>
 ACTION: <工具名称>
-ACTION_INPUT: <JSON 格式的工具参数>` : ''}
+ACTION_INPUT: <JSON 格式的工具参数>
+
+重要：ACTION_INPUT 必须是纯 JSON，不要包含任何额外文字。
+正确示例：ACTION_INPUT: {"query": "Claude 最新模型"}
+错误示例：ACTION_INPUT: {"query": "Claude 最新模型"}\\nCONTENT: ...
+错误示例：ACTION_INPUT: {raw: "..."} ` : ''}
 
 规则：
-- 简单问题直接用 FINAL_ANSWER 回答
+- 涉及实时信息或可能过时的信息时，优先使用 web_search 工具搜索
+- 搜索时使用当前年份（${new Date().getFullYear()}年）作为关键词，不要用旧年份
+- 当用户要求打开网站或链接时，使用 open_url 工具直接打开
+- 当用户要求浏览网页内容、操作网页时，使用 browser_navigate 等浏览器工具
+- 简单的常识问题或计算问题直接用 FINAL_ANSWER 回答
 - 复杂问题先思考再决定是否需要工具
-- 回答要简洁、准确、有帮助${toolsSection}`
+- 如果搜索结果不足以回答问题，可以多次搜索不同关键词
+- 搜索时使用简洁的关键词，中英文均可
+- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${openUrlHint}${browserHint}`
   }
 
   /** 构建 Think 步骤的 prompt */

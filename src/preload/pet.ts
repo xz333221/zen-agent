@@ -5,9 +5,13 @@ const petAPI = {
   /** 通知主进程：宠物被点击 */
   onClick: () => ipcRenderer.send(IPC_CHANNELS.PET_CLICK),
 
-  /** 通知主进程：宠物被拖拽 */
+  /** 通知主进程：宠物被拖拽（兼容旧模式） */
   onDrag: (deltaX: number, deltaY: number) =>
     ipcRenderer.send(IPC_CHANNELS.PET_DRAG, deltaX, deltaY),
+
+  /** 通知主进程：拖拽开始（主进程进入轮询模式） */
+  onDragStart: () =>
+    ipcRenderer.send(IPC_CHANNELS.PET_DRAG_START),
 
   /** 通知主进程：拖拽结束 */
   onDragEnd: () =>

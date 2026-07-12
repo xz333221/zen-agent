@@ -11,6 +11,8 @@ declare module '*.vue' {
 interface PetAPI {
   onClick: () => void
   onDrag: (deltaX: number, deltaY: number) => void
+  onDragStart: () => void
+  onDragEnd: () => void
   onRightClick: () => void
   onBubbleAction: (actionId: string) => Promise<unknown>
   onStateChange: (callback: (data: import('./src/shared/types').PetStateData) => void) => () => void
@@ -93,6 +95,10 @@ interface SettingsAPI {
   deleteMCPServer: (id: string) => Promise<{ success: boolean }>
   toggleMCPServer: (id: string, enabled: boolean) => Promise<{ success: boolean }>
   testMCPServer: (server: import('./src/shared/types').MCPServerConfig) => Promise<import('./src/shared/types').MCPTestResult>
+  getDataPaths: () => Promise<import('./src/shared/types').DataPaths>
+  openInFolder: (path: string) => Promise<{ success: boolean; error?: string }>
+  getZoom: () => Promise<number>
+  setZoom: (zoom: number) => Promise<{ success: boolean; zoom?: number; error?: string }>
 }
 
 interface SkillsAPI {

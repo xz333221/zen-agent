@@ -335,6 +335,7 @@ export const IPC_CHANNELS = {
   // Pet → Main
   PET_CLICK: 'pet:click',
   PET_DRAG: 'pet:drag',
+  PET_DRAG_START: 'pet:drag-start',
   PET_DRAG_END: 'pet:drag-end',
   PET_RIGHT_CLICK: 'pet:right-click',
   PET_BUBBLE_ACTION: 'pet:bubble-action',
@@ -356,6 +357,7 @@ export const IPC_CHANNELS = {
   CHAT_DELETE_SESSION: 'chat:delete-session',
   CHAT_LOAD_SESSION: 'chat:load-session',
   CHAT_TRANSCRIBE: 'chat:transcribe',
+  CHAT_GET_SUGGESTIONS: 'chat:get-suggestions',
 
   // Main → Chat
   CHAT_RESPONSE_CHUNK: 'chat:response-chunk',
@@ -437,8 +439,94 @@ export const IPC_CHANNELS = {
   MCP_UPDATE: 'mcp:update',
   MCP_DELETE: 'mcp:delete',
   MCP_TOGGLE: 'mcp:toggle',
-  MCP_TEST: 'mcp:test'
+  MCP_TEST: 'mcp:test',
+
+  // Data Paths & Zoom
+  SYS_GET_DATA_PATHS: 'sys:get-data-paths',
+  SYS_OPEN_IN_FOLDER: 'sys:open-in-folder',
+  SYS_GET_ZOOM: 'sys:get-zoom',
+  SYS_SET_ZOOM: 'sys:set-zoom',
+
+  // Search Config (T-025)
+  SEARCH_GET_CONFIG: 'search:get-config',
+  SEARCH_SET_CONFIG: 'search:set-config',
+  SEARCH_TEST: 'search:test',
+
+  // Browser Config
+  BROWSER_GET_CONFIG: 'browser:get-config',
+  BROWSER_SET_CONFIG: 'browser:set-config',
+  BROWSER_SELECT_DIR: 'browser:select-dir',
+  BROWSER_DETECT_USER_DATA_DIR: 'browser:detect-user-data-dir'
 } as const
+
+// ═══════════════════════════════════════════════════════════
+//  搜索配置
+// ═══════════════════════════════════════════════════════════
+
+/** 搜索引擎类型 */
+export type SearchEngine = 'baidu' | 'sogou' | 'bing' | 'searxng'
+
+/** 搜索配置 */
+export interface SearchConfig {
+  /** 主搜索引擎 */
+  engine: SearchEngine
+  /** 备用搜索引擎（主引擎结果不足时尝试） */
+  fallbackEngine: SearchEngine | 'none'
+  /** SearXNG 实例 URL（当 engine 为 searxng 时使用） */
+  searxngUrl: string
+  /** 最大搜索结果数 */
+  maxResults: number
+  /** 是否抓取网页内容 */
+  fetchContent: boolean
+  /** 搜索超时（毫秒） */
+  timeoutMs: number
+}
+
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
+  engine: 'baidu',
+  fallbackEngine: 'sogou',
+  searxngUrl: '',
+  maxResults: 5,
+  fetchContent: true,
+  timeoutMs: 30000
+}
+
+// ═══════════════════════════════════════════════════════════
+//  浏览器自动化配置
+// ═══════════════════════════════════════════════════════════
+
+export type BrowserUserDataMode = 'temporary' | 'app-dedicated' | 'custom'
+
+export interface BrowserConfig {
+  /** 用户数据目录模式 */
+  userDataMode: BrowserUserDataMode
+  /** Chrome 可执行文件路径（留空则自动检测系统 Chrome） */
+  executablePath: string
+  /** 
+   * 自定义用户数据目录路径（仅在 userDataMode='custom' 时使用）。
+   * 设置为 Chrome 默认目录（如 C:\Users\xxx\AppData\Local\Google\Chrome\User Data）: 加载用户登录态
+   * 注意: 如果 Chrome 已在运行且使用同一目录，需要先关闭 Chrome 或使用不同的 profile
+   */
+  userDataDir: string
+  /** Profile 目录名（在 userDataDir 下的子目录，如 "Default", "Profile 1"） */
+  profile: string
+  /** 是否无头模式（默认 false，有头模式可以看到浏览器窗口） */
+  headless: boolean
+  /** 窗口宽度 */
+  width: number
+  /** 窗口高度 */
+  height: number
+}
+
+export const DEFAULT_BROWSER_CONFIG: BrowserConfig = {
+  userDataMode: 'app-dedicated',
+  executablePath: '',
+  userDataDir: '',
+  profile: 'Default',
+  headless: false,
+  width: 1280,
+  height: 800
+}
 
 // ═══════════════════════════════════════════════════════════
 //  会话
@@ -669,4 +757,23 @@ export interface MCPTestResult {
   message: string
   /** 服务器提供的工具列表 */
   tools?: string[]
+}
+
+// ═══════════════════════════════════════════════════════════
+//  数据路径信息
+// ═══════════════════════════════════════════════════════════
+
+export interface DataPaths {
+  /** 配置文件路径 (config.json) */
+  configFile: string
+  /** 数据库文件路径 */
+  databaseFile: string
+  /** 数据目录 (userData) */
+  dataDir: string
+  /** 技能存储目录 */
+  skillsDir: string
+  /** 插件目录 */
+  pluginsDir: string
+  /** 日志目录 */
+  logsDir: string
 }

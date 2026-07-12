@@ -119,16 +119,28 @@ export class LLMProvider {
     const ms = timeoutMs ?? DEFAULT_TIMEOUT_MS
     const ctrl = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
 
-    const onCallerAbort = () => ctrl.abort(signal!.reason)
+    const onCallerAbort = () => {
+      console.warn(`[LLM] Request aborted by caller: ${signal!.reason}`)
+      ctrl.abort(signal!.reason)
+    }
     if (signal) {
-      if (signal.aborted) ctrl.abort(signal.reason)
+      if (signal.aborted) {
+        console.warn('[LLM] Request already aborted before start')
+        ctrl.abort(signal.reason)
+      }
       else signal.addEventListener('abort', onCallerAbort, { once: true })
     }
 
     if (ms > 0) {
       timer = setTimeout(
-        () => ctrl.abort(new Error(`LLM request timed out after ${Math.round(ms / 1000)}s`)),
+        () => {
+          timedOut = true
+          const errMsg = `LLM request timed out after ${Math.round(ms / 1000)}s`
+          console.error(`[LLM] ⏱ TIMEOUT: ${errMsg}`)
+          ctrl.abort(new Error(errMsg))
+        },
         ms
       )
       timer.unref?.()
@@ -140,6 +152,7 @@ export class LLMProvider {
         if (timer) clearTimeout(timer)
         if (signal) signal.removeEventListener('abort', onCallerAbort)
       },
+      isTimedOut: () => timedOut,
     }
   }
 
@@ -147,7 +160,14 @@ export class LLMProvider {
   async chat(request: ChatRequest): Promise<string> {
     const cfg = this.resolveModel(request.modelKey)
     const client = this.getClient(cfg.apiKey, cfg.baseURL)
-    const { signal, cleanup } = this.withTimeout(request.signal, request.timeoutMs)
+    const timeoutCtx = this.withTimeout(request.signal, request.timeoutMs)
+    const signal = timeoutCtx.signal
+    const cleanup = timeoutCtx.cleanup
+
+    const startTime = Date.now()
+    const msgCount = request.messages.length
+    const timeoutStr = request.timeoutMs ? `${request.timeoutMs / 1000}s` : '8min(default)'
+    console.log(`[LLM] chat() → model=${cfg.model}, msgs=${msgCount}, timeout=${timeoutStr}`)
 
     try {
       const params: OpenAI.Chat.ChatCompletionCreateParams = {
@@ -162,7 +182,19 @@ export class LLMProvider {
 
       const response = await client.chat.completions.create(params, { signal })
       const raw = response.choices[0]?.message?.content || ''
-      return raw.replace(THINK_TAG_RE, '').trim() || raw.trim()
+      const result = raw.replace(THINK_TAG_RE, '').trim() || raw.trim()
+      const elapsed = Date.now() - startTime
+      console.log(`[LLM] chat() ✓ ${elapsed}ms, response=${result.length}chars`)
+      return result
+    } catch (err) {
+      const elapsed = Date.now() - startTime
+      const error = err as Error
+      const isTimeout = timeoutCtx.isTimedOut?.() ?? false
+      console.error(`[LLM] chat() ✗ ${elapsed}ms, timeout=${isTimeout}, error:`, error?.message || error)
+      if (error?.stack) {
+        console.error('[LLM] chat() stack:', error.stack.split('\n').slice(0, 5).join('\n'))
+      }
+      throw err
     } finally {
       cleanup()
     }
@@ -172,7 +204,14 @@ export class LLMProvider {
   async chatStream(request: ChatRequest, callbacks: ChatStreamCallbacks): Promise<string> {
     const cfg = this.resolveModel(request.modelKey)
     const client = this.getClient(cfg.apiKey, cfg.baseURL)
-    const { signal, cleanup } = this.withTimeout(request.signal, request.timeoutMs)
+    const timeoutCtx = this.withTimeout(request.signal, request.timeoutMs)
+    const signal = timeoutCtx.signal
+    const cleanup = timeoutCtx.cleanup
+
+    const startTime = Date.now()
+    const msgCount = request.messages.length
+    const timeoutStr = request.timeoutMs ? `${request.timeoutMs / 1000}s` : '8min(default)'
+    console.log(`[LLM] chatStream() → model=${cfg.model}, msgs=${msgCount}, timeout=${timeoutStr}`)
 
     try {
       const params: OpenAI.Chat.ChatCompletionCreateParams = {
@@ -189,12 +228,14 @@ export class LLMProvider {
       const stream = await client.chat.completions.create(params, { signal })
 
       let fullRaw = ''
+      let chunkCount = 0
       const filter = new ThinkFilter()
 
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta?.content || ''
         if (!delta) continue
 
+        chunkCount++
         fullRaw += delta
         const clean = filter.feed(delta)
         if (clean) callbacks.onChunk(clean)
@@ -204,10 +245,19 @@ export class LLMProvider {
       if (final) callbacks.onChunk(final)
 
       const result = fullRaw.replace(THINK_TAG_RE, '').trim() || fullRaw.trim()
+      const elapsed = Date.now() - startTime
+      console.log(`[LLM] chatStream() ✓ ${elapsed}ms, chunks=${chunkCount}, response=${result.length}chars`)
       callbacks.onDone?.(result)
       return result
     } catch (err) {
-      callbacks.onError?.(err as Error)
+      const elapsed = Date.now() - startTime
+      const error = err as Error
+      const isTimeout = timeoutCtx.isTimedOut?.() ?? false
+      console.error(`[LLM] chatStream() ✗ ${elapsed}ms, timeout=${isTimeout}, error:`, error?.message || error)
+      if (error?.stack) {
+        console.error('[LLM] chatStream() stack:', error.stack.split('\n').slice(0, 5).join('\n'))
+      }
+      callbacks.onError?.(error)
       throw err
     } finally {
       cleanup()
@@ -217,22 +267,123 @@ export class LLMProvider {
   /** 生成嵌入向量 */
   async embed(text: string, modelKey?: string): Promise<number[]> {
     const cfg = this.resolveModel(modelKey)
-    const client = this.getClient(cfg.apiKey, cfg.baseURL)
+    const textLen = text.length
+    console.log(`[LLM] embed() → model=${cfg.model}, textLen=${textLen}`)
 
-    const response = await client.embeddings.create({
-      model: cfg.model,
-      input: text,
+    // 检测是否为 MiniMax API（主动使用原生格式，避免 OpenAI 格式的不必要尝试）
+    const isMiniMaxAPI = cfg.baseURL.toLowerCase().includes('minimax')
+
+    // 1. 如果不是 MiniMax API，先尝试 OpenAI 兼容格式
+    if (!isMiniMaxAPI) {
+      const client = this.getClient(cfg.apiKey, cfg.baseURL)
+      try {
+        const response = await client.embeddings.create({
+          model: cfg.model,
+          input: text,
+        })
+
+        if (response?.data?.[0]?.embedding) {
+          console.log(`[LLM] embed() ✓ dim=${response.data[0].embedding.length}`)
+          return response.data[0].embedding
+        }
+
+        // 检查是否为 MiniMax 风格的响应（vectors + base_resp）
+        const raw = response as unknown as { vectors?: number[][]; base_resp?: { status_msg?: string } }
+        if (raw?.vectors?.[0]) {
+          console.log(`[LLM] embed() ✓ (MiniMax-style response) dim=${raw.vectors[0].length}`)
+          return raw.vectors[0]
+        }
+
+        throw new Error(
+          `Embedding API returned unexpected response format (model: ${cfg.model}). ` +
+          `Ensure the model supports embeddings. Response: ${JSON.stringify(response).slice(0, 200)}`
+        )
+      } catch (err) {
+        // 2. 如果 OpenAI 格式失败，尝试 MiniMax 原生格式（使用 texts 参数）
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        // 扩展检测条件：不仅检查 'texts'，还检查 'invalid params'、'vectors' 等 MiniMax 特征
+        const shouldTryMiniMax = errorMsg.includes('texts') ||
+          errorMsg.includes('missing required parameter') ||
+          errorMsg.includes('invalid params') ||
+          errorMsg.includes('vectors') ||
+          errorMsg.includes('base_resp')
+
+        if (shouldTryMiniMax) {
+          console.warn(`[LLM] embed() OpenAI format failed (${errorMsg.slice(0, 100)}), trying MiniMax native format...`)
+          return await this.embedWithMiniMaxFormat(cfg, text)
+        }
+        console.error(`[LLM] embed() ✗ error: ${errorMsg}`)
+        throw err
+      }
+    }
+
+    // 3. MiniMax API 直接使用原生格式
+    return await this.embedWithMiniMaxFormat(cfg, text)
+  }
+
+  /** 使用 MiniMax 原生格式调用 embedding API */
+  private async embedWithMiniMaxFormat(cfg: LLMConfig, text: string): Promise<number[]> {
+    const baseUrl = cfg.baseURL.replace(/\/+$/, '')
+    const url = `${baseUrl}/embeddings`
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        texts: [text],
+        type: 'db',  // MiniMax embedding 类型: db 或 query
+      }),
     })
 
-    // 健壮性检查：某些 OpenAI 兼容 API 不支持 embeddings 或返回非标准格式
-    if (!response?.data?.[0]?.embedding) {
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '')
       throw new Error(
-        `Embedding API returned unexpected response format (model: ${cfg.model}). ` +
-        `Ensure the model supports embeddings. Response: ${JSON.stringify(response).slice(0, 200)}`
+        `MiniMax embedding API returned HTTP ${response.status}. ` +
+        `Response: ${errText.slice(0, 200)}`
       )
     }
 
-    return response.data[0].embedding
+    const data = await response.json() as {
+      vectors?: number[][]
+      data?: Array<{ embedding?: number[] }>
+      base_resp?: { status_code?: number; status_msg?: string }
+    }
+
+    // MiniMax 原生格式: { vectors: [[...]], base_resp: {...} }
+    if (data?.vectors?.[0]) {
+      return data.vectors[0]
+    }
+
+    // 某些 MiniMax 兼容端点可能返回 OpenAI 风格的 data 字段
+    if (data?.data?.[0]?.embedding) {
+      return data.data[0].embedding
+    }
+
+    // MiniMax 返回了错误响应（如 vectors: null + base_resp.status_msg: "invalid params"）
+    if (data?.base_resp?.status_msg) {
+      const statusMsg = data.base_resp.status_msg
+      const statusCode = data.base_resp.status_code
+      if (statusCode === 2013 || statusMsg.includes('invalid params')) {
+        throw new Error(
+          `MiniMax embedding API 返回参数错误 (status: ${statusCode}): "${statusMsg}"。` +
+          `请检查设置中的嵌入模型是否正确配置（MiniMax 的嵌入模型应为 "embo-01"），` +
+          `当前使用的模型是 "${cfg.model}"。如果这是聊天模型，请在设置中配置正确的嵌入模型。`
+        )
+      }
+      throw new Error(
+        `MiniMax embedding API error (status: ${statusCode}): ${statusMsg}. ` +
+        `Model: ${cfg.model}. Response: ${JSON.stringify(data).slice(0, 200)}`
+      )
+    }
+
+    throw new Error(
+      `MiniMax embedding API returned unexpected response. ` +
+      `Model: ${cfg.model}. Response: ${JSON.stringify(data).slice(0, 200)}`
+    )
   }
 
   /** 语音转文字（使用 OpenAI 兼容的 /audio/transcriptions 接口） */
@@ -243,6 +394,18 @@ export class LLMProvider {
     modelKey?: string
   ): Promise<string> {
     const cfg = this.resolveModel(modelKey)
+
+    // 检查是否可能是 OpenAI 官方 API（只有 OpenAI 支持 /audio/transcriptions）
+    const isOpenAI = cfg.baseURL.includes('openai.com') || cfg.baseURL.includes('api.openai')
+    
+    if (!isOpenAI) {
+      throw new Error(
+        '当前 LLM 服务商不支持语音识别（/audio/transcriptions 接口）。' +
+        '语音识别需要使用 OpenAI 官方 API 或兼容的服务。' +
+        '请在设置中配置 OpenAI 的 API Key 和 Base URL（https://api.openai.com/v1）。'
+      )
+    }
+
     const client = this.getClient(cfg.apiKey, cfg.baseURL)
 
     // 根据 MIME 类型确定文件扩展名
@@ -261,8 +424,18 @@ export class LLMProvider {
       ...(language ? { language } : {}),
     }
 
-    const response = await client.audio.transcriptions.create(params)
-    return response.text || ''
+    try {
+      const response = await client.audio.transcriptions.create(params)
+      return response.text || ''
+    } catch (err: any) {
+      if (err?.status === 404) {
+        throw new Error(
+          '语音识别接口返回 404。当前 API 服务商不支持 /audio/transcriptions 端点。' +
+          '语音识别需要 OpenAI 官方 API（https://api.openai.com/v1）。'
+        )
+      }
+      throw err
+    }
   }
 }
 

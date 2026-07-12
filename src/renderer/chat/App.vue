@@ -49,6 +49,66 @@ async function handleSend(message: string, images?: ImageAttachment[]) {
   store.loadSessions()
 }
 
+// ── 推荐问题 ──
+const suggestions = ref<string[]>([])
+const suggestionsLoading = ref(false)
+
+// 默认推荐问题（当 LLM 未配置或生成失败时使用）
+const defaultSuggestions = [
+  '帮我写一个 Vue 组件',
+  '写一篇技术文章',
+  '搜索最新技术资讯',
+  '分析一段数据'
+]
+
+/** 加载推荐问题 */
+async function loadSuggestions() {
+  suggestionsLoading.value = true
+  try {
+    const result = await window.chatAPI.getSuggestions()
+    if (result && result.length > 0) {
+      suggestions.value = result
+    }
+  } catch (e) {
+    console.error('Failed to load suggestions:', e)
+  } finally {
+    suggestionsLoading.value = false
+  }
+}
+
+/** 点击推荐问题 */
+function handleSuggestionClick(text: string) {
+  handleSend(text)
+}
+
+// ── 重试上一条消息 ──
+async function handleRetry() {
+  // 找到最后一条用户消息
+  const messages = store.messages
+  let lastUserMsg: { content: string; images?: ImageAttachment[] } | null = null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      lastUserMsg = { content: messages[i].content, images: messages[i].images }
+      break
+    }
+  }
+  if (!lastUserMsg) return
+
+  // 移除最后一条 assistant 消息
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      messages.splice(i, 1)
+      break
+    }
+  }
+
+  // 重新开始流式输出
+  store.startAssistantMessage()
+  await scrollToBottom()
+  await window.chatAPI.send(lastUserMsg.content, lastUserMsg.images)
+  store.loadSessions()
+}
+
 // ── 停止生成 ──
 function handleStop() {
   window.chatAPI.stop()
@@ -124,8 +184,11 @@ onMounted(async () => {
   const session = await window.chatAPI.newSession()
   store.setSessionId(session.sessionId)
 
-  // 加载会话列表
-  await store.loadSessions()
+// 加载会话列表
+await store.loadSessions()
+
+// 加载推荐问题（基于历史记录动态生成）
+loadSuggestions()
 
   // 监听流式响应
   unlistenChunk = window.chatAPI.onResponseChunk((data) => {
@@ -211,12 +274,32 @@ function openSettings() {
             <line x1="9" y1="3" x2="9" y2="21"/>
           </svg>
         </button>
-        <svg class="title-owl-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"/>
-          <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
-          <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-          <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-          <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+        <svg class="title-owl-icon" width="22" height="22" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+          <!-- 耳簇 -->
+          <path d="M 58 62 Q 48 35 62 48 Q 58 42 58 62 Z" fill="#3A3A42"/>
+          <path d="M 142 62 Q 152 35 138 48 Q 142 42 142 62 Z" fill="#3A3A42"/>
+          <!-- 身体 -->
+          <ellipse cx="100" cy="118" rx="58" ry="62" fill="#3A3A42"/>
+          <!-- 腹部 -->
+          <ellipse cx="100" cy="128" rx="36" ry="42" fill="#E8E4DD"/>
+          <!-- 翅膀 -->
+          <ellipse cx="52" cy="122" rx="14" ry="32" transform="rotate(12 52 122)" fill="#2E2E35"/>
+          <ellipse cx="148" cy="122" rx="14" ry="32" transform="rotate(-12 148 122)" fill="#2E2E35"/>
+          <!-- 眼窝 -->
+          <circle cx="80" cy="92" r="23" fill="#E8E4DD"/>
+          <circle cx="120" cy="92" r="23" fill="#E8E4DD"/>
+          <!-- 瞳孔 -->
+          <circle cx="80" cy="92" r="13" fill="#F5A623"/>
+          <circle cx="120" cy="92" r="13" fill="#F5A623"/>
+          <circle cx="80" cy="92" r="8" fill="#1A1A1A"/>
+          <circle cx="120" cy="92" r="8" fill="#1A1A1A"/>
+          <!-- 高光 -->
+          <circle cx="84" cy="88" r="4" fill="#FFFFFF"/>
+          <circle cx="124" cy="88" r="4" fill="#FFFFFF"/>
+          <circle cx="76" cy="96" r="2" fill="#FFFFFF"/>
+          <circle cx="116" cy="96" r="2" fill="#FFFFFF"/>
+          <!-- 喙 -->
+          <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
         </svg>
         <span class="title-text">Zen Agent</span>
       </div>
@@ -295,34 +378,53 @@ function openSettings() {
           <!-- 空状态 -->
           <div v-if="store.messages.length === 0" class="empty-state" data-testid="empty-state">
             <div class="empty-owl" data-testid="empty-owl">
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
-                <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-                <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-                <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+              <svg width="72" height="72" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                <!-- 耳簇 -->
+                <path d="M 58 62 Q 48 35 62 48 Q 58 42 58 62 Z" fill="#3A3A42"/>
+                <path d="M 142 62 Q 152 35 138 48 Q 142 42 142 62 Z" fill="#3A3A42"/>
+                <!-- 身体 -->
+                <ellipse cx="100" cy="118" rx="58" ry="62" fill="#3A3A42"/>
+                <!-- 腹部 -->
+                <ellipse cx="100" cy="128" rx="36" ry="42" fill="#E8E4DD"/>
+                <!-- 翅膀 -->
+                <ellipse cx="52" cy="122" rx="14" ry="32" transform="rotate(12 52 122)" fill="#2E2E35"/>
+                <ellipse cx="148" cy="122" rx="14" ry="32" transform="rotate(-12 148 122)" fill="#2E2E35"/>
+                <!-- 眼窝 -->
+                <circle cx="80" cy="92" r="23" fill="#E8E4DD"/>
+                <circle cx="120" cy="92" r="23" fill="#E8E4DD"/>
+                <!-- 瞳孔 -->
+                <circle cx="80" cy="92" r="13" fill="#F5A623"/>
+                <circle cx="120" cy="92" r="13" fill="#F5A623"/>
+                <circle cx="80" cy="92" r="8" fill="#1A1A1A"/>
+                <circle cx="120" cy="92" r="8" fill="#1A1A1A"/>
+                <!-- 高光 -->
+                <circle cx="84" cy="88" r="4" fill="#FFFFFF"/>
+                <circle cx="124" cy="88" r="4" fill="#FFFFFF"/>
+                <circle cx="76" cy="96" r="2" fill="#FFFFFF"/>
+                <circle cx="116" cy="96" r="2" fill="#FFFFFF"/>
+                <!-- 喙 -->
+                <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
               </svg>
             </div>
             <p class="empty-title">你好，我是小禅</p>
             <p class="empty-desc">你的自我进化 AI 桌面助手</p>
-            <div class="empty-suggestions">
-              <div class="suggestion-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                帮我写一个 Vue 组件
-              </div>
-              <div class="suggestion-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                写一篇技术文章
-              </div>
-              <div class="suggestion-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                搜索最新技术资讯
-              </div>
-              <div class="suggestion-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                分析一段数据
-              </div>
-            </div>
+<div class="empty-suggestions">
+<div
+v-for="(text, i) in (suggestions.length > 0 ? suggestions : defaultSuggestions)"
+:key="i"
+class="suggestion-item"
+@click="handleSuggestionClick(text)"
+>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;">
+<template v-if="i === 0"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></template>
+<template v-else-if="i === 1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></template>
+<template v-else-if="i === 2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></template>
+<template v-else><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></template>
+</svg>
+<span v-if="suggestionsLoading && suggestions.length === 0" class="suggestion-loading-text">正在分析你的历史对话...</span>
+<template v-else>{{ text }}</template>
+</div>
+</div>
           </div>
 
           <!-- 消息列表 -->
@@ -331,6 +433,7 @@ function openSettings() {
             :key="msg.id"
             :message="msg"
             :live-steps="msg.streaming ? store.liveSteps : []"
+            @retry="handleRetry"
           />
         </div>
 
@@ -673,11 +776,12 @@ function openSettings() {
 }
 
 .suggestion-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  border-radius: 12px;
+display: flex;
+align-items: center;
+gap: 8px;
+padding: 14px 16px;
+border-radius: 12px;
+cursor: pointer;
   background: var(--surface-card);
   border: 1px solid var(--surface-border);
   font-size: 14px;
@@ -698,7 +802,12 @@ function openSettings() {
 }
 
 .suggestion-item:active {
-  transform: translateY(0);
+transform: translateY(0);
+}
+
+.suggestion-loading-text {
+color: var(--text-meta);
+font-style: italic;
 }
 
 /* ═══ 侧边栏动画 ═══ */

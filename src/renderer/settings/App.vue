@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import type { LLMProviderConfig, Skill, MCPServerConfig, MCPTestResult } from '@shared/types'
+import type { LLMProviderConfig, Skill, MCPServerConfig, MCPTestResult, DataPaths, SearchConfig, SearchEngine, BrowserConfig } from '@shared/types'
+import { DEFAULT_SEARCH_CONFIG, DEFAULT_BROWSER_CONFIG } from '@shared/types'
 
 // ── 状态 ──
 const loading = ref(true)
@@ -11,8 +12,11 @@ const errorMsg = ref('')
 const providers = ref<LLMProviderConfig[]>([])
 const defaultModel = ref('')
 const embeddingModel = ref('')
-const maxTokens = ref(32000)
-const outputReserve = ref(4000)
+const maxTokens = ref(128000)
+const outputReserve = ref(8000)
+
+// ── 缩放比例 ──
+const zoomFactor = ref(1.0)
 
 // ── 当前导航页 ──
 const activeNav = ref('providers')
@@ -25,6 +29,8 @@ const NAV_ITEMS = [
   { id: 'mcp', label: 'MCP 服务器', icon: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' },
   { id: 'shortcuts', label: '快捷键', icon: '<rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>' },
   { id: 'theme', label: '外观主题', icon: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><line x1="2" y1="12" x2="22" y2="12"/>' },
+  { id: 'search', label: '搜索配置', icon: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>' },
+  { id: 'browser', label: '浏览器配置', icon: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' },
   { id: 'ollama', label: '离线模式', icon: '<path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>' },
   { id: 'data', label: '数据管理', icon: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' }
 ] as const
@@ -67,6 +73,85 @@ const exportLoading = ref(false)
 const exportResult = ref('')
 const importLoading = ref(false)
 const importResult = ref('')
+
+// ── 数据路径 ──
+const dataPaths = ref<DataPaths | null>(null)
+
+// ── 浏览器配置 ──
+const browserConfig = ref<BrowserConfig>({ ...DEFAULT_BROWSER_CONFIG })
+const browserSaving = ref(false)
+const browserDetecting = ref(false)
+const browserDetectResult = ref('')
+const detectedProfiles = ref<string[]>([])
+
+async function loadBrowserConfig() {
+  try {
+    const config = await window.settingsAPI.getBrowserConfig()
+    if (config) {
+      browserConfig.value = { ...DEFAULT_BROWSER_CONFIG, ...config }
+    }
+  } catch (e) {
+    console.error('Failed to load browser config:', e)
+  }
+}
+
+async function handleSaveBrowser() {
+  browserSaving.value = true
+  try {
+    // 重要：Vue ref 的响应式对象不能直接通过 Electron IPC 传输
+    // 必须转换为纯对象，否则会报 "An object could not be cloned" 错误
+    const plainConfig = JSON.parse(JSON.stringify(browserConfig.value))
+    await window.settingsAPI.setBrowserConfig(plainConfig)
+    saved.value = true
+    setTimeout(() => saved.value = false, 2000)
+  } catch (e: any) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    browserSaving.value = false
+  }
+}
+
+async function handleSelectBrowserDir() {
+  try {
+    const result = await window.settingsAPI.selectBrowserDir()
+    if (result.success && result.path) {
+      browserConfig.value.userDataDir = result.path
+    }
+  } catch (e: any) {
+    errorMsg.value = e?.message || String(e)
+  }
+}
+
+async function handleDetectBrowserDir() {
+  browserDetecting.value = true
+  browserDetectResult.value = ''
+  try {
+    const result = await window.settingsAPI.detectBrowserUserDataDir()
+    if (result.success && result.path) {
+      browserConfig.value.userDataDir = result.path
+      // 保存检测到的 Profile 列表
+      if (result.profiles && result.profiles.length > 0) {
+        detectedProfiles.value = result.profiles
+        browserConfig.value.profile = result.profiles[0]
+      }
+      browserDetectResult.value = `已检测到 ${result.browser} 用户数据目录${result.profiles && result.profiles.length > 1 ? '（' + result.profiles.length + ' 个 Profile）' : ''}`
+    } else {
+      browserDetectResult.value = result.error || '未找到 Chrome 用户数据目录'
+    }
+  } catch (e: any) {
+    browserDetectResult.value = e?.message || String(e)
+  } finally {
+    browserDetecting.value = false
+    setTimeout(() => { browserDetectResult.value = '' }, 5000)
+  }
+}
+
+// 常见 Chrome 用户数据目录路径
+const CHROME_DATA_PATHS = {
+  win32: 'C:\\Users\\<你的用户名>\\AppData\\Local\\Google\\Chrome\\User Data',
+  darwin: '/Users/<你的用户名>/Library/Application Support/Google/Chrome',
+  linux: '/home/<你的用户名>/.config/google-chrome'
+}
 
 // ── 技能配置 ──
 const skills = ref<Skill[]>([])
@@ -190,6 +275,50 @@ const MCP_TRANSPORT_LABELS: Record<MCPServerConfig['transport'], string> = {
   'streamable-http': 'HTTP (远程)'
 }
 
+// ── MCP 预设服务器 ──
+interface MCPPreset {
+  name: string
+  description: string
+  transport: MCPServerConfig['transport']
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+}
+
+const MCP_PRESETS: MCPPreset[] = [
+  { name: '文件系统', description: '读写本地文件系统（指定目录）', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-filesystem', '/path/to/allowed/dir'] },
+  { name: 'GitHub', description: '搜索仓库、管理 Issue 和 PR', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'your-token' } },
+  { name: 'SQLite', description: '查询和操作 SQLite 数据库', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-sqlite', '--db-path', '/path/to/database.db'] },
+  { name: 'PostgreSQL', description: '连接 PostgreSQL 数据库', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-postgres', 'postgresql://user:pass@localhost/db'] },
+  { name: 'Brave Search', description: '使用 Brave 搜索引擎搜索网络', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-brave-search'], env: { BRAVE_API_KEY: 'your-api-key' } },
+  { name: 'Puppeteer', description: '浏览器自动化，截图和网页操作', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-puppeteer'] },
+  { name: 'Memory', description: '知识图谱持久化记忆', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-memory'] },
+  { name: 'Fetch', description: '抓取网页内容并转为 Markdown', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-fetch'] },
+  { name: 'Time', description: '获取当前时间和时区信息', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-time'] },
+  { name: 'Sequential Thinking', description: '动态反思式的逐步推理', transport: 'stdio', command: 'npx', args: ['@modelcontextprotocol/server-sequential-thinking'] },
+]
+
+// ── 技能广场推荐 ──
+const SKILL_RESOURCES = [
+  { name: 'MCP 官方服务器', url: 'https://github.com/modelcontextprotocol/servers', description: 'Anthropic 官方维护的 MCP 服务器集合' },
+  { name: 'Awesome MCP Servers', url: 'https://github.com/punkpeye/awesome-mcp-servers', description: '社区收集的优质 MCP 服务器列表' },
+  { name: 'MCP Hub', url: 'https://mcp.so/', description: 'MCP 服务器搜索引擎和目录' },
+  { name: 'Smithery', url: 'https://smithery.ai/', description: 'MCP 服务器安装和管理平台' },
+  { name: 'Cursor MCP 目录', url: 'https://docs.cursor.com/mcp', description: 'Cursor 编辑器的 MCP 文档和服务器列表' },
+  { name: 'Claude MCP 文档', url: 'https://docs.anthropic.com/en/docs/agents-and-tools/mcp', description: 'Anthropic 官方 MCP 使用文档' },
+]
+
+// ── 技能发现资源（新建技能时展示） ──
+const SKILL_DISCOVERY_RESOURCES = [
+  { name: 'Awesome ChatGPT Prompts', url: 'https://github.com/f/awesome-chatgpt-prompts', description: '社区收集的优质 Prompt 模板' },
+  { name: 'Prompt Engineering Guide', url: 'https://www.promptingguide.ai/', description: '系统学习 Prompt 工程的指南' },
+  { name: 'LangChain Hub', url: 'https://smith.langchain.com/hub', description: 'LangChain 社区 Prompt 和技能库' },
+  { name: 'OpenAI Cookbook', url: 'https://cookbook.openai.com/', description: 'OpenAI 官方示例和最佳实践' },
+  { name: 'Anthropic Prompt Library', url: 'https://docs.anthropic.com/en/prompt-library', description: 'Anthropic 官方 Prompt 库' },
+  { name: 'PromptHero', url: 'https://prompthero.com/', description: 'Prompt 搜索和分享社区' },
+]
+
 async function loadMCPServers() {
   mcpLoading.value = true
   try {
@@ -217,6 +346,18 @@ function handleAddMCP() {
   isCreatingMCP.value = true
   mcpTestResult.value = null
   showMCPModal.value = true
+}
+
+function applyMCPPreset(preset: MCPPreset) {
+  if (!editingMCP.value) return
+  editingMCP.value.name = preset.name
+  editingMCP.value.transport = preset.transport
+  editingMCP.value.command = preset.command || ''
+  editingMCP.value.args = preset.args || []
+  editingMCP.value.env = preset.env || {}
+  editingMCP.value.url = preset.url || ''
+  mcpArgsText.value = (preset.args || []).join(' ')
+  mcpEnvText.value = Object.entries(preset.env || {}).map(([k, v]) => `${k}=${v}`).join('\n')
 }
 
 function handleEditMCP(server: MCPServerConfig) {
@@ -333,6 +474,100 @@ watch(showMCPModal, (val) => {
     mcpEnvText.value = Object.entries(editingMCP.value.env || {}).map(([k, v]) => `${k}=${v}`).join('\n')
   }
 })
+
+// ── 搜索配置 (T-025) ──
+const searchConfig = ref<SearchConfig>({ ...DEFAULT_SEARCH_CONFIG })
+const searchSaving = ref(false)
+const searchTesting = ref(false)
+const searchTestQuery = ref('')
+const searchTestResults = ref<Array<{ title: string; url: string; snippet: string; content?: string }>>([])
+const searchTestError = ref('')
+
+const ENGINE_LABELS: Record<SearchEngine, string> = {
+  baidu: '百度',
+  sogou: '搜狗',
+  bing: 'Bing',
+  searxng: 'SearXNG'
+}
+
+const ENGINE_DESCRIPTIONS: Record<SearchEngine, string> = {
+  baidu: '国内最佳，中文搜索结果质量最高',
+  sogou: '国内可用，结果质量好',
+  bing: '国内可用，部分中文查询可能不够精准',
+  searxng: '隐私元搜索引擎，聚合多个引擎结果，需自建或使用公共实例'
+}
+
+const FALLBACK_OPTIONS: Array<{ value: SearchEngine | 'none'; label: string }> = [
+  { value: 'baidu', label: '百度' },
+  { value: 'sogou', label: '搜狗' },
+  { value: 'bing', label: 'Bing' },
+  { value: 'searxng', label: 'SearXNG' },
+  { value: 'none', label: '不使用备用引擎' }
+]
+
+// SearXNG 公共实例列表
+const SEARXNG_PUBLIC_INSTANCES = [
+  { url: 'https://searx.be', name: 'searx.be', location: '比利时' },
+  { url: 'https://search.privacyguides.net', name: 'search.privacyguides.net', location: '荷兰' },
+  { url: 'https://searx.tiekoetter.com', name: 'searx.tiekoetter.com', location: '德国' },
+  { url: 'https://search.ononoki.org', name: 'search.ononoki.org', location: '德国' },
+  { url: 'https://searx.mha.fi', name: 'searx.mha.fi', location: '芬兰' },
+]
+
+async function loadSearchConfig() {
+  try {
+    const config = await window.settingsAPI.getSearchConfig()
+    if (config) {
+      searchConfig.value = { ...DEFAULT_SEARCH_CONFIG, ...config }
+    }
+  } catch (err) {
+    console.error('加载搜索配置失败:', err)
+  }
+}
+
+async function handleSaveSearch() {
+  searchSaving.value = true
+  searchTestError.value = ''
+  try {
+    await window.settingsAPI.setSearchConfig({
+      engine: searchConfig.value.engine,
+      fallbackEngine: searchConfig.value.fallbackEngine,
+      searxngUrl: searchConfig.value.searxngUrl,
+      maxResults: searchConfig.value.maxResults,
+      fetchContent: searchConfig.value.fetchContent,
+      timeoutMs: searchConfig.value.timeoutMs
+    })
+    saved.value = true
+    setTimeout(() => { saved.value = false }, 2000)
+  } catch (err) {
+    searchTestError.value = `保存失败: ${err instanceof Error ? err.message : String(err)}`
+    console.error(err)
+  } finally {
+    searchSaving.value = false
+  }
+}
+
+async function handleTestSearch() {
+  if (!searchTestQuery.value.trim()) {
+    searchTestError.value = '请输入测试关键词'
+    return
+  }
+  searchTesting.value = true
+  searchTestError.value = ''
+  searchTestResults.value = []
+  try {
+    const result = await window.settingsAPI.testSearch(searchTestQuery.value.trim(), JSON.parse(JSON.stringify(searchConfig.value)))
+    if (result.success && result.results) {
+      searchTestResults.value = result.results
+    } else {
+      searchTestError.value = result.error || '搜索失败，请检查配置'
+    }
+  } catch (err: any) {
+    searchTestError.value = `测试失败: ${err?.message || String(err)}`
+  } finally {
+    searchTesting.value = false
+  }
+}
 
 // ── 当前编辑的 Provider ──
 const editingProvider = ref<LLMProviderConfig | null>(null)
@@ -544,8 +779,8 @@ onMounted(async () => {
     providers.value = config.providers || []
     defaultModel.value = config.defaultModel || ''
     embeddingModel.value = config.embeddingModel || ''
-    maxTokens.value = config.maxTokens || 32000
-    outputReserve.value = 4000
+    maxTokens.value = config.maxTokens || config.agent?.maxTokens || 128000
+    outputReserve.value = config.outputReserve || config.agent?.outputReserve || 8000
     shortcuts.value = await window.settingsAPI.getShortcuts()
   const themeData = await window.settingsAPI.getTheme()
   themeMode.value = themeData.mode as 'light' | 'dark' | 'system'
@@ -555,9 +790,25 @@ onMounted(async () => {
     ollamaStatus.value = await window.settingsAPI.getOllamaStatus()
   } catch {}
 
+  // 加载缩放比例
+  try {
+    zoomFactor.value = await window.settingsAPI.getZoom()
+  } catch {}
+
+  // 加载数据路径
+  try {
+    dataPaths.value = await window.settingsAPI.getDataPaths()
+  } catch {}
+
   // 加载技能和 MCP 服务器
   loadSkills()
   loadMCPServers()
+
+// 加载搜索配置
+loadSearchConfig()
+
+// 加载浏览器配置
+loadBrowserConfig()
   } catch (err) {
     errorMsg.value = '加载配置失败'
     console.error(err)
@@ -578,24 +829,36 @@ async function handleSave() {
   saving.value = true
   errorMsg.value = ''
   try {
+    // 使用 JSON 序列化去除 Vue 响应式代理，避免 IPC "An object could not be cloned" 错误
+    const plainProviders = JSON.parse(JSON.stringify(providers.value))
+    const plainMcpServers = JSON.parse(JSON.stringify(mcpServers.value))
+    const plainShortcuts = JSON.parse(JSON.stringify(shortcuts.value))
+
     await window.settingsAPI.setConfig({
-      providers: providers.value,
+      providers: plainProviders,
       defaultModel: defaultModel.value,
       embeddingModel: embeddingModel.value,
       agent: {
         maxTokens: maxTokens.value,
         outputReserve: outputReserve.value
       },
-      mcpServers: mcpServers.value
+      mcpServers: plainMcpServers
     })
-    await window.settingsAPI.setShortcuts(shortcuts.value)
+    await window.settingsAPI.setShortcuts(plainShortcuts)
     saved.value = true
     setTimeout(() => { saved.value = false }, 2000)
   } catch (err) {
-    errorMsg.value = '保存配置失败'
+    errorMsg.value = `保存配置失败: ${err instanceof Error ? err.message : String(err)}`
     console.error(err)
   } finally {
     saving.value = false
+  }
+
+  // 缩放比例单独保存，不影响主配置保存
+  try {
+    await window.settingsAPI.setZoom(zoomFactor.value)
+  } catch (err) {
+    console.error('保存缩放比例失败:', err)
   }
 }
 
@@ -848,6 +1111,15 @@ function onTitleMouseMove(e: MouseEvent) {
 function onTitleMouseUp() {
   isDragging = false
 }
+
+// ── 在文件管理器中打开路径 ──
+async function openInFolder(path: string) {
+  try {
+    await window.settingsAPI.openInFolder(path)
+  } catch (err) {
+    console.error('打开路径失败:', err)
+  }
+}
 </script>
 
 <template>
@@ -856,12 +1128,28 @@ function onTitleMouseUp() {
     <div class="title-bar" data-testid="title-bar"
          @mousedown="onTitleMouseDown" @mousemove="onTitleMouseMove" @mouseup="onTitleMouseUp">
       <div class="title-left">
-        <svg class="title-owl-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"/>
-          <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
-          <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-          <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-          <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+        <svg class="title-owl-icon" width="22" height="22" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+          <!-- 耳簇 -->
+          <path d="M 58 62 Q 48 35 62 48 Q 58 42 58 62 Z" fill="#3A3A42"/>
+          <path d="M 142 62 Q 152 35 138 48 Q 142 42 142 62 Z" fill="#3A3A42"/>
+          <!-- 身体 -->
+          <ellipse cx="100" cy="118" rx="58" ry="62" fill="#3A3A42"/>
+          <!-- 腹部 -->
+          <ellipse cx="100" cy="128" rx="36" ry="42" fill="#E8E4DD"/>
+          <!-- 眼窝 -->
+          <circle cx="80" cy="92" r="23" fill="#E8E4DD"/>
+          <circle cx="120" cy="92" r="23" fill="#E8E4DD"/>
+          <!-- 瞳孔外圈（琥珀色） -->
+          <circle cx="80" cy="92" r="13" fill="#F5A623"/>
+          <circle cx="120" cy="92" r="13" fill="#F5A623"/>
+          <!-- 瞳孔内圈 -->
+          <circle cx="80" cy="92" r="8" fill="#1A1A1A"/>
+          <circle cx="120" cy="92" r="8" fill="#1A1A1A"/>
+          <!-- 高光 -->
+          <circle cx="84" cy="88" r="4" fill="#FFFFFF"/>
+          <circle cx="124" cy="88" r="4" fill="#FFFFFF"/>
+          <!-- 喙 -->
+          <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
         </svg>
         <span class="title-text">设置</span>
       </div>
@@ -960,7 +1248,7 @@ function onTitleMouseUp() {
           <div class="form-row">
             <label class="form-label">
               选择嵌入模型
-              <span class="hint-text">嵌入模型与聊天模型不同，如 OpenAI 的 text-embedding-3-small。留空则使用伪嵌入（无语义搜索能力）。</span>
+              <span class="hint-text">嵌入模型将文本转换为高维向量，用于记忆检索和语义搜索。它与你选择的聊天模型是不同类型的模型 —— 聊天模型生成文本，嵌入模型生成数值向量。例如 OpenAI 的 text-embedding-3-small 或 text-embedding-3-large。如果留空，Agent 会使用简单的关键词匹配代替语义搜索，记忆检索质量会降低但仍可工作。通常嵌入模型的调用成本极低，建议配置。</span>
             </label>
             <select class="form-select" data-testid="select-embedding-model" :value="embeddingModel" @change="onEmbeddingModelChange">
               <option value="">未配置（使用伪嵌入）</option>
@@ -977,20 +1265,24 @@ function onTitleMouseUp() {
         <section v-show="activeNav === 'agent'" class="settings-section">
           <h2 class="section-title">Agent 配置</h2>
           <div class="form-row">
-            <label class="form-label">最大上下文 Token
+            <label class="form-label">
+              最大上下文 Token
               <span class="value-display">{{ maxTokens.toLocaleString() }}</span>
             </label>
             <input type="range" class="form-slider" data-testid="slider-max-tokens"
-                   min="4000" max="128000" step="1000"
+                   min="4000" max="2000000" step="1000"
                    v-model.number="maxTokens" />
+            <span class="hint-text">上下文窗口的 Token 预算上限。超过此值时，旧消息会被自动压缩为摘要。现代模型如 GPT-4o 支持高达 128K，Claude 支持 200K，Gemini 支持高达 2M。建议根据你使用的模型的实际限制来设置。</span>
           </div>
           <div class="form-row">
-            <label class="form-label">输出预留 Token
+            <label class="form-label">
+              输出预留 Token
               <span class="value-display">{{ outputReserve.toLocaleString() }}</span>
             </label>
             <input type="range" class="form-slider" data-testid="slider-output-reserve"
-                   min="1000" max="16000" step="500"
+                   min="1000" max="64000" step="500"
                    v-model.number="outputReserve" />
+            <span class="hint-text">为模型回复预留的 Token 空间。上下文预算减去此值后剩余的空间用于历史消息。较大的值允许更长的回复，但会减少可用历史。建议设置为模型最大输出长度的 1-2 倍。</span>
           </div>
         </section>
 
@@ -1052,9 +1344,32 @@ function onTitleMouseUp() {
           </div>
           <p class="hint-text" style="margin-bottom: 12px;">MCP (Model Context Protocol) 服务器为 Agent 提供外部工具和数据源。支持 Stdio 本地进程和 SSE/HTTP 远程服务器。</p>
 
+          <!-- MCP 预设快捷添加 -->
+          <div class="settings-section" style="margin-bottom: 16px;">
+            <h3 class="section-title" style="font-size: 13px;">推荐 MCP 服务器（点击快速添加）</h3>
+            <div class="recommended-models">
+              <button v-for="preset in MCP_PRESETS" :key="preset.name" class="recommended-model-btn" @click="handleAddMCP(); applyMCPPreset(preset)">
+                <span class="model-name">{{ preset.name }}</span>
+                <span class="model-desc">{{ preset.description }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 技能广场推荐 -->
+          <div class="settings-section" style="margin-bottom: 16px;">
+            <h3 class="section-title" style="font-size: 13px;">MCP 服务器搜索与发现</h3>
+            <div class="recommended-models">
+              <a v-for="resource in SKILL_RESOURCES" :key="resource.name" :href="resource.url" target="_blank" class="recommended-model-btn" style="text-decoration: none; cursor: pointer;">
+                <span class="model-name">{{ resource.name }}</span>
+                <span class="model-desc">{{ resource.description }}</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; color: #94a3b8;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </a>
+            </div>
+          </div>
+
           <div v-if="mcpServers.length === 0" class="empty-providers">
             <p>暂无 MCP 服务器</p>
-            <p class="hint">点击「添加服务器」配置 MCP 连接</p>
+            <p class="hint">点击「添加服务器」或上方推荐预设配置 MCP 连接</p>
           </div>
 
           <div v-else class="provider-list">
@@ -1125,6 +1440,375 @@ function onTitleMouseUp() {
                 <span>{{ option.label }}</span>
               </button>
             </div>
+          </div>
+
+          <h2 class="section-title" style="margin-top: 24px;">界面缩放</h2>
+          <div class="form-row">
+            <label class="form-label">
+              缩放比例
+              <span class="value-display">{{ (zoomFactor * 100).toFixed(0) }}%</span>
+            </label>
+            <input type="range" class="form-slider" data-testid="slider-zoom"
+                   min="0.5" max="3.0" step="0.05"
+                   v-model.number="zoomFactor" />
+            <span class="hint-text">调整界面缩放比例。100% 为默认大小，调大可让字体和界面元素更大。保存后生效，应用于聊天窗口和设置窗口。</span>
+          </div>
+        </section>
+
+        <!-- ── 搜索配置 ── -->
+        <section v-show="activeNav === 'search'" class="settings-section" data-testid="search-section">
+          <h2 class="section-title">搜索配置</h2>
+          <span class="hint-text">配置网络搜索的引擎和参数。当主搜索引擎结果不足时，会自动尝试备用引擎。</span>
+
+          <!-- 主搜索引擎 -->
+          <div class="form-row">
+            <label class="form-label">主搜索引擎</label>
+            <div class="search-engine-grid">
+              <button
+                v-for="(label, key) in ENGINE_LABELS"
+                :key="key"
+                class="engine-option-btn"
+                :class="{ active: searchConfig.engine === key }"
+                @click="searchConfig.engine = key"
+              >
+                <div class="engine-option-name">{{ label }}</div>
+                <div class="engine-option-desc">{{ ENGINE_DESCRIPTIONS[key] }}</div>
+              </button>
+            </div>
+          </div>
+
+          <!-- 备用搜索引擎 -->
+          <div class="form-row">
+            <label class="form-label">备用搜索引擎</label>
+            <select v-model="searchConfig.fallbackEngine" class="form-select">
+              <option
+                v-for="opt in FALLBACK_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >{{ opt.label }}</option>
+            </select>
+            <span class="hint-text">当主引擎结果不足 2 条时，自动尝试备用引擎</span>
+          </div>
+
+          <!-- SearXNG 配置 -->
+          <div v-if="searchConfig.engine === 'searxng' || searchConfig.fallbackEngine === 'searxng'" class="searxng-config-block">
+            <div class="form-row">
+              <label class="form-label">SearXNG 实例 URL</label>
+              <input
+                v-model="searchConfig.searxngUrl"
+                type="text"
+                class="form-input"
+                placeholder="https://your-searxng-instance.com"
+              />
+              <span class="hint-text">
+                SearXNG 是一个开源的隐私元搜索引擎，聚合 Google、Bing、DuckDuckGo 等多个引擎的结果。
+              </span>
+            </div>
+
+            <!-- 公共实例 -->
+            <div class="form-row">
+              <label class="form-label">公共实例</label>
+              <div class="searxng-instances">
+                <button
+                  v-for="inst in SEARXNG_PUBLIC_INSTANCES"
+                  :key="inst.url"
+                  class="instance-btn"
+                  :class="{ active: searchConfig.searxngUrl === inst.url }"
+                  @click="searchConfig.searxngUrl = inst.url"
+                >
+                  <span class="instance-name">{{ inst.name }}</span>
+                  <span class="instance-location">{{ inst.location }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Docker 自建提示 -->
+            <div class="searxng-docker-hint">
+              <div class="hint-header">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                <strong>自建 SearXNG（推荐）</strong>
+              </div>
+              <p>使用 Docker 一键部署，更稳定且无限制：</p>
+              <pre class="docker-command">docker run -d --name searxng -p 8080:8080 \
+  -e SEARXNG_BASE_URL=http://localhost:8080 \
+  -v searxng-data:/etc/searxng \
+  searxng/searxng:latest</pre>
+              <p>部署后将上方 URL 填为 <code>http://localhost:8080</code></p>
+              <p class="hint-sub">需在 SearXNG 的 <code>settings.yml</code> 中启用 JSON 格式输出：</p>
+              <pre class="docker-command">search:
+  formats:
+    - html
+    - json</pre>
+            </div>
+          </div>
+
+          <!-- 搜索参数 -->
+          <div class="form-row">
+            <label class="form-label">最大搜索结果数</label>
+            <input
+              v-model.number="searchConfig.maxResults"
+              type="number"
+              min="1"
+              max="20"
+              class="form-input"
+              style="width: 120px"
+            />
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">抓取网页内容</label>
+            <label class="checkbox-label">
+              <input
+                v-model="searchConfig.fetchContent"
+                type="checkbox"
+              />
+              <span>启用（获取更丰富的搜索结果内容，但速度较慢）</span>
+            </label>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">搜索超时（毫秒）</label>
+            <input
+              v-model.number="searchConfig.timeoutMs"
+              type="number"
+              min="5000"
+              max="60000"
+              step="1000"
+              class="form-input"
+              style="width: 120px"
+            />
+          </div>
+
+          <!-- 保存按钮 -->
+          <div class="form-row">
+            <button
+              class="btn-primary"
+              :disabled="searchSaving"
+              @click="handleSaveSearch"
+            >
+              {{ searchSaving ? '保存中...' : '保存搜索配置' }}
+            </button>
+            <span v-if="saved" class="save-success">✓ 已保存</span>
+          </div>
+
+          <!-- 搜索测试 -->
+          <div class="search-test-block">
+            <h3 class="subsection-title">搜索测试</h3>
+            <div class="form-row">
+              <input
+                v-model="searchTestQuery"
+                type="text"
+                class="form-input"
+                placeholder="输入测试关键词..."
+                @keyup.enter="handleTestSearch"
+              />
+              <button
+                class="btn-secondary"
+                :disabled="searchTesting"
+                @click="handleTestSearch"
+              >
+                {{ searchTesting ? '搜索中...' : '测试搜索' }}
+              </button>
+            </div>
+
+            <div v-if="searchTestError" class="search-error">
+              {{ searchTestError }}
+            </div>
+
+            <div v-if="searchTestResults.length > 0" class="search-test-results">
+              <div
+                v-for="(result, i) in searchTestResults"
+                :key="i"
+                class="search-result-item"
+              >
+                <div class="result-header">
+                  <span class="result-index">{{ i + 1 }}</span>
+                  <a :href="result.url" target="_blank" class="result-title">{{ result.title }}</a>
+                </div>
+                <div class="result-url">{{ result.url }}</div>
+                <div v-if="result.snippet" class="result-snippet">{{ result.snippet }}</div>
+                <div v-if="result.content" class="result-content">{{ result.content.substring(0, 300) }}...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 浏览器配置 ── -->
+        <section v-show="activeNav === 'browser'" class="settings-section" data-testid="browser-section">
+          <h2 class="section-title">浏览器自动化配置</h2>
+          <span class="hint-text">配置 AI 控制浏览器时的行为。选择不同的用户数据目录模式来决定浏览器是否保留登录态。</span>
+
+          <!-- 用户数据目录模式选择 -->
+          <div class="form-row">
+            <label class="form-label">用户数据目录模式</label>
+            <div class="search-engine-grid">
+              <button
+                class="engine-option-btn"
+                :class="{ active: browserConfig.userDataMode === 'temporary' }"
+                @click="browserConfig.userDataMode = 'temporary'"
+              >
+                <div class="engine-option-name">🔄 临时目录</div>
+                <div class="engine-option-desc">每次打开都是全新浏览器，无任何登录态，关闭后数据清除</div>
+              </button>
+              <button
+                class="engine-option-btn"
+                :class="{ active: browserConfig.userDataMode === 'app-dedicated' }"
+                @click="browserConfig.userDataMode = 'app-dedicated'"
+              >
+                <div class="engine-option-name">🏠 小禅专属目录</div>
+                <div class="engine-option-desc">独立持久化目录，不与你的 Chrome 冲突。登录一次后后续自动保持</div>
+              </button>
+              <button
+                class="engine-option-btn"
+                :class="{ active: browserConfig.userDataMode === 'custom' }"
+                @click="browserConfig.userDataMode = 'custom'"
+              >
+                <div class="engine-option-name">👤 自定义目录</div>
+                <div class="engine-option-desc">使用你指定的 Chrome 用户数据目录，加载已有登录态（需先关闭 Chrome）</div>
+              </button>
+            </div>
+          </div>
+
+          <!-- 自定义目录配置（仅在 custom 模式下显示） -->
+          <div v-if="browserConfig.userDataMode === 'custom'" class="searxng-config-block">
+            <!-- 用户数据目录 -->
+            <div class="form-row">
+              <label class="form-label">用户数据目录</label>
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <input
+                  v-model="browserConfig.userDataDir"
+                  type="text"
+                  class="form-input"
+                  placeholder="Chrome 用户数据目录路径"
+                  style="flex: 1; min-width: 300px;"
+                />
+                <button class="btn-secondary" @click="handleDetectBrowserDir" :disabled="browserDetecting" style="white-space: nowrap;">
+                  {{ browserDetecting ? '检测中...' : '🔍 自动检测' }}
+                </button>
+                <button class="btn-secondary" @click="handleSelectBrowserDir" style="white-space: nowrap;">
+                  选择目录
+                </button>
+              </div>
+              <span v-if="browserDetectResult" class="hint-text" style="color: var(--accent-color, #4f46e5); font-weight: 500;">
+                {{ browserDetectResult }}
+              </span>
+              <span class="hint-text">
+                💡 点击「自动检测」可自动查找系统 Chrome 的用户数据目录。Windows 下通常为：<br>
+                <code>C:\Users\你的用户名\AppData\Local\Google\Chrome\User Data</code><br>
+                ⚠️ <strong>注意：</strong>如果 Chrome 正在运行且使用同一 Profile，需先关闭 Chrome，或使用不同的 Profile 名称。
+              </span>
+            </div>
+
+            <!-- Profile 目录名 -->
+            <div class="form-row">
+              <label class="form-label">Profile 目录名</label>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input
+                  v-model="browserConfig.profile"
+                  type="text"
+                  class="form-input"
+                  placeholder="Default"
+                  list="profile-list"
+                  style="width: 200px;"
+                />
+                <datalist id="profile-list">
+                  <option v-for="p in detectedProfiles" :key="p" :value="p" />
+                </datalist>
+              </div>
+              <span class="hint-text">
+                Chrome 用户数据目录下的子目录名。<code>Default</code> 是默认 Profile，<code>Profile 1</code> 等是额外创建的 Profile。
+              </span>
+            </div>
+          </div>
+
+          <!-- 小禅专属目录说明（仅在 app-dedicated 模式下显示） -->
+          <div v-if="browserConfig.userDataMode === 'app-dedicated'" class="searxng-docker-hint" style="margin-top: 0; margin-bottom: 16px;">
+            <div class="hint-header">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+              <strong>小禅专属浏览器目录</strong>
+            </div>
+            <p>小禅会使用应用数据目录下独立的浏览器 Profile，与你的 Chrome 完全隔离，互不干扰。</p>
+            <p>首次使用时是空白浏览器，你可以在小禅打开的浏览器中手动登录微信读书等网站，之后登录态会自动持久化保存。</p>
+            <p class="hint-sub">下次打开浏览器时，小禅会自动加载已保存的登录状态，无需重新登录。</p>
+          </div>
+
+          <!-- 临时目录说明 -->
+          <div v-if="browserConfig.userDataMode === 'temporary'" class="searxng-docker-hint" style="margin-top: 0; margin-bottom: 16px;">
+            <div class="hint-header">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              <strong>临时目录模式</strong>
+            </div>
+            <p>每次打开浏览器都是全新的，不保留任何 Cookie、登录态或浏览历史。关闭后所有数据自动清除。</p>
+            <p>适合需要完全隔离、无痕迹的自动化场景。</p>
+          </div>
+
+          <!-- Chrome 可执行文件路径 -->
+          <div class="form-row">
+            <label class="form-label">Chrome 路径（可选）</label>
+            <input
+              v-model="browserConfig.executablePath"
+              type="text"
+              class="form-input"
+              placeholder="留空 = 自动检测系统 Chrome"
+            />
+            <span class="hint-text">指定 Chrome 可执行文件路径。留空时自动检测系统中安装的 Chrome。</span>
+          </div>
+
+          <!-- 无头模式 -->
+          <div class="form-row">
+            <label class="form-label">无头模式</label>
+            <label class="checkbox-label">
+              <input
+                v-model="browserConfig.headless"
+                type="checkbox"
+              />
+              <span>启用无头模式（不显示浏览器窗口，后台运行）</span>
+            </label>
+            <span class="hint-text">建议保持关闭，这样可以看到浏览器的操作过程。</span>
+          </div>
+
+          <!-- 窗口大小 -->
+          <div class="form-row">
+            <label class="form-label">窗口大小</label>
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <div>
+                <span class="hint-text" style="margin-right: 6px;">宽度</span>
+                <input
+                  v-model.number="browserConfig.width"
+                  type="number"
+                  min="800"
+                  max="3840"
+                  step="80"
+                  class="form-input"
+                  style="width: 100px;"
+                />
+              </div>
+              <div>
+                <span class="hint-text" style="margin-right: 6px;">高度</span>
+                <input
+                  v-model.number="browserConfig.height"
+                  type="number"
+                  min="600"
+                  max="2160"
+                  step="60"
+                  class="form-input"
+                  style="width: 100px;"
+                />
+              </div>
+              <span class="hint-text">像素</span>
+            </div>
+          </div>
+
+          <!-- 保存按钮 -->
+          <div class="form-row">
+            <button
+              class="btn-primary"
+              :disabled="browserSaving"
+              @click="handleSaveBrowser"
+            >
+              {{ browserSaving ? '保存中...' : '保存浏览器配置' }}
+            </button>
+            <span v-if="saved" class="save-success">✓ 已保存</span>
           </div>
         </section>
 
@@ -1218,6 +1902,33 @@ function onTitleMouseUp() {
           </div>
           <div v-if="exportResult" class="form-row result-msg" data-testid="export-result">{{ exportResult }}</div>
           <div v-if="importResult" class="form-row result-msg" data-testid="import-result">{{ importResult }}</div>
+
+          <!-- 配置文件路径 -->
+          <h2 class="section-title" style="margin-top: 28px;">配置文件位置</h2>
+          <p class="hint-text" style="margin-bottom: 12px;">以下是 Agent 所有数据文件的存储位置，点击「打开」可在文件管理器中查看。</p>
+          <div v-if="dataPaths" class="provider-list">
+            <div v-for="item in [
+              { label: '配置文件', path: dataPaths.configFile, desc: 'config.json — 模型、快捷键等配置' },
+              { label: '数据库', path: dataPaths.databaseFile, desc: 'zen-agent.db — 会话、消息、记忆数据' },
+              { label: '数据目录', path: dataPaths.dataDir, desc: '所有数据的根目录' },
+              { label: '技能存储', path: dataPaths.skillsDir, desc: '自动生成和手动创建的技能' },
+              { label: '插件目录', path: dataPaths.pluginsDir, desc: '插件和扩展' },
+              { label: '日志目录', path: dataPaths.logsDir, desc: '运行日志' },
+            ]" :key="item.label" class="provider-card">
+              <div class="provider-info">
+                <div class="provider-name">{{ item.label }}</div>
+                <div class="provider-url" style="word-break: break-all; white-space: normal;">{{ item.path }}</div>
+                <div class="provider-models">
+                  <span class="model-tag" style="opacity: 0.7;">{{ item.desc }}</span>
+                </div>
+              </div>
+              <div class="provider-actions">
+                <button class="btn-icon" @click="openInFolder(item.path)" title="在文件管理器中打开">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- 错误和保存提示 -->
@@ -1400,6 +2111,17 @@ function onTitleMouseUp() {
               <option value="disabled">已禁用</option>
               <option value="rejected">已拒绝</option>
             </select>
+          </div>
+
+          <!-- 技能发现资源 -->
+          <div class="form-row" v-if="isCreatingSkill" style="margin-top: 16px;">
+            <label class="form-label">技能广场 & Prompt 资源</label>
+            <span class="hint-text" style="margin-bottom: 8px;">点击以下链接搜索和发现优质 Prompt 模板，复制到上方即可使用</span>
+            <div class="recommended-models" style="flex-wrap: wrap; gap: 6px;">
+              <a v-for="resource in SKILL_DISCOVERY_RESOURCES" :key="resource.name" :href="resource.url" target="_blank" class="recommended-model-btn" style="text-decoration: none; cursor: pointer;" :title="resource.description">
+                <span class="model-name">{{ resource.name }}</span>
+              </a>
+            </div>
           </div>
         </div>
         <div class="modal-footer">

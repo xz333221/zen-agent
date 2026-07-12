@@ -8,64 +8,36 @@ import type { PetState, PetStateData } from '@shared/types'
 const petState = ref<PetState>('idle')
 const bubble = ref<PetStateData['bubble'] | null>(null)
 
-// ── 拖拽支持（优化流畅度）──
+// ── 拖拽支持（优化流畅度：主进程轮询模式）──
 let isDragging = false
-let dragStartX = 0
-let dragStartY = 0
 let dragMoved = false
-let rafId: number | null = null
-let pendingDeltaX = 0
-let pendingDeltaY = 0
 
-function onMouseDown(e: MouseEvent) {
+function onMouseDown(_e: MouseEvent) {
   isDragging = true
   dragMoved = false
-  dragStartX = e.screenX
-  dragStartY = e.screenY
 }
 
 function onMouseMove(e: MouseEvent) {
   if (!isDragging) return
-  const deltaX = e.screenX - dragStartX
-  const deltaY = e.screenY - dragStartY
-  if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
-    dragMoved = true
-  }
-  if (dragMoved) {
-    // 使用 requestAnimationFrame 合并多个拖拽事件，减少 IPC 通信频率
-    pendingDeltaX += deltaX
-    pendingDeltaY += deltaY
-    if (rafId === null) {
-      rafId = requestAnimationFrame(() => {
-        window.petAPI.onDrag(pendingDeltaX, pendingDeltaY)
-        pendingDeltaX = 0
-        pendingDeltaY = 0
-        rafId = null
-      })
+
+  // 首次检测到移动时，通知主进程开始轮询拖拽
+  if (!dragMoved) {
+    if (Math.abs(e.movementX) > 2 || Math.abs(e.movementY) > 2) {
+      dragMoved = true
+      window.petAPI.onDragStart()
     }
-    dragStartX = e.screenX
-    dragStartY = e.screenY
   }
 }
 
 function onMouseUp(e: MouseEvent) {
   if (!isDragging) return
   isDragging = false
-  // 取消未执行的 raf
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId)
-    rafId = null
-    // 发送剩余的 delta
-    if (pendingDeltaX !== 0 || pendingDeltaY !== 0) {
-      window.petAPI.onDrag(pendingDeltaX, pendingDeltaY)
-      pendingDeltaX = 0
-      pendingDeltaY = 0
-    }
-  }
-  // 如果有拖动，通知主进程保存位置
+
+  // 如果有拖动，通知主进程结束拖拽并保存位置
   if (dragMoved) {
     window.petAPI.onDragEnd()
   }
+
   // 如果没有拖动，则视为点击
   if (!dragMoved) {
     if (e.button === 2) {
@@ -74,6 +46,7 @@ function onMouseUp(e: MouseEvent) {
       window.petAPI.onClick()
     }
   }
+  dragMoved = false
 }
 
 // 阻止默认右键菜单
@@ -91,6 +64,11 @@ let unlistenState: (() => void) | null = null
 let unlistenBubble: (() => void) | null = null
 
 onMounted(async () => {
+  // 全局 mouseup 监听：防止鼠标拖出窗口后无法结束拖拽
+  window.addEventListener('mouseup', onMouseUp)
+  // 全局 mousemove 监听：拖拽中即使鼠标移出窗口也能继续
+  window.addEventListener('mousemove', onMouseMove)
+
   // 监听状态变化
   unlistenState = window.petAPI.onStateChange((data: PetStateData) => {
     petState.value = data.state
@@ -127,6 +105,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('mousemove', onMouseMove)
   unlistenState?.()
   unlistenBubble?.()
   unlistenTheme?.()

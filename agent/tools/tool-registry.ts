@@ -10,6 +10,8 @@ import { calculator } from './calculator'
 import { fileReader } from './file-reader'
 import { codeExecutor } from './code-executor'
 import { webSearch } from './web-search'
+import { openUrl } from './open-url'
+import { browserTools } from './browser-tools'
 import type { ToolDef, ToolExecutor } from './types'
 
 // ── 所有内置工具列表 ──
@@ -17,7 +19,9 @@ const builtinTools: ToolExecutor[] = [
   calculator,
   fileReader,
   codeExecutor,
-  webSearch
+  webSearch,
+  openUrl,
+  ...browserTools
 ]
 
 /** 已注册标记，避免重复注册 */

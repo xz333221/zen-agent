@@ -31,6 +31,10 @@ const chatAPI = {
   transcribe: (audioBase64: string, mimeType: string, language?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CHAT_TRANSCRIBE, audioBase64, mimeType, language),
 
+  /** 获取基于历史记录的推荐问题 */
+  getSuggestions: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHAT_GET_SUGGESTIONS) as Promise<string[]>,
+
   /** 获取系统配置 */
   getConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SYS_GET_CONFIG),
 

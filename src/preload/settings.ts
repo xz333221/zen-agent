@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type LLMProviderConfig, type Skill, type MCPServerConfig, type MCPTestResult } from '@shared/types'
+import { IPC_CHANNELS, type LLMProviderConfig, type Skill, type MCPServerConfig, type MCPTestResult, type DataPaths, type SearchConfig, type BrowserConfig } from '@shared/types'
 
 const settingsAPI = {
   /** 获取配置 */
@@ -124,7 +124,64 @@ const settingsAPI = {
 
   /** 测试 MCP 服务器连接 */
   testMCPServer: (server: MCPServerConfig) =>
-    ipcRenderer.invoke(IPC_CHANNELS.MCP_TEST, server)
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_TEST, server),
+
+  // ── 数据路径 & 缩放 ──
+
+  /** 获取数据文件路径 */
+  getDataPaths: () => ipcRenderer.invoke(IPC_CHANNELS.SYS_GET_DATA_PATHS) as Promise<DataPaths>,
+
+  /** 在文件管理器中打开路径 */
+  openInFolder: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.SYS_OPEN_IN_FOLDER, path),
+
+  /** 获取缩放比例 */
+  getZoom: () => ipcRenderer.invoke(IPC_CHANNELS.SYS_GET_ZOOM) as Promise<number>,
+
+  /** 设置缩放比例 */
+  setZoom: (zoom: number) => ipcRenderer.invoke(IPC_CHANNELS.SYS_SET_ZOOM, zoom),
+
+  // ── 搜索配置 (T-025) ──
+
+  /** 获取搜索配置 */
+  getSearchConfig: () => ipcRenderer.invoke(IPC_CHANNELS.SEARCH_GET_CONFIG) as Promise<SearchConfig>,
+
+  /** 保存搜索配置 */
+  setSearchConfig: (config: Partial<SearchConfig>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SEARCH_SET_CONFIG, config),
+
+  /** 测试搜索 */
+  testSearch: (query: string, config: SearchConfig) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SEARCH_TEST, { query, config }) as Promise<{
+      success: boolean
+      results?: Array<{ title: string; url: string; snippet: string; content?: string }>
+      error?: string
+    }>,
+
+  // ── 浏览器配置 ──
+
+  /** 获取浏览器配置 */
+  getBrowserConfig: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_GET_CONFIG) as Promise<BrowserConfig>,
+
+  /** 保存浏览器配置 */
+  setBrowserConfig: (config: Partial<BrowserConfig>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SET_CONFIG, config),
+
+  /** 选择目录（弹出系统对话框） */
+  selectBrowserDir: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SELECT_DIR) as Promise<{
+    success: boolean
+    path?: string
+    canceled?: boolean
+    error?: string
+  }>,
+
+  /** 自动检测系统 Chrome 用户数据目录 */
+  detectBrowserUserDataDir: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_DETECT_USER_DATA_DIR) as Promise<{
+    success: boolean
+    path?: string
+    browser?: string
+    profiles?: string[]
+    error?: string
+  }>
 }
 
 contextBridge.exposeInMainWorld('settingsAPI', settingsAPI)

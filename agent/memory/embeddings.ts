@@ -93,9 +93,12 @@ export async function generateEmbedding(
   if (isEmbeddingConfigured()) {
     try {
       const embeddingModelKey = getEmbeddingModelKey()
+      console.log(`[Embeddings] Generating embedding with model=${embeddingModelKey}, textLen=${truncated.length}`)
       embedding = await llm.embed(truncated, embeddingModelKey)
+      console.log(`[Embeddings] ✓ dim=${embedding.length}`)
     } catch (err) {
-      console.warn('[Embeddings] LLM embedding failed, using pseudo-embedding:', err)
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      console.warn(`[Embeddings] ✗ LLM embedding failed, falling back to pseudo-embedding. Error: ${errorMsg.slice(0, 200)}`)
       embedding = generatePseudoEmbedding(truncated)
     }
   } else {

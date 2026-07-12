@@ -110,13 +110,13 @@ const typeColors: Record<string, string> = {
 .bubble-arrow {
   position: absolute;
   bottom: -7px;
-  right: 40px;
+  left: 40px;
   width: 12px;
   height: 12px;
   background: rgba(255, 255, 255, 0.97);
-  border-right: 1.5px solid var(--accent);
+  border-left: 1.5px solid var(--accent);
   border-bottom: 1.5px solid var(--accent);
-  transform: rotate(45deg);
+  transform: rotate(-45deg);
 }
 </style>
 

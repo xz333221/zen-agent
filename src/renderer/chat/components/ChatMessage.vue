@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import type { ChatMessage, TraceStep, ImageAttachment } from '@shared/types'
 import ExecutionTrace from './ExecutionTrace.vue'
 import LiveTrace from './LiveTrace.vue'
@@ -8,6 +8,10 @@ import { renderMarkdown } from '../utils/markdown'
 const props = defineProps<{
   message: ChatMessage
   liveSteps?: TraceStep[]
+}>()
+
+const emit = defineEmits<{
+  retry: []
 }>()
 
 // ── 复制消息 ──
@@ -52,6 +56,119 @@ function viewFullImage(img: ImageAttachment) {
     w.document.title = `图片 ${img.width}x${img.height}`
   }
 }
+
+// ── 代码块交互（复制 + 预览） ──
+const messageContentRef = ref<HTMLElement | null>(null)
+
+/** 复制代码到剪贴板 */
+async function copyCode(raw: string, btn: HTMLElement) {
+  try {
+    await navigator.clipboard.writeText(raw)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = raw
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+  // 临时改变按钮文字
+  const span = btn.querySelector('span')
+  if (span) {
+    const original = span.textContent
+    span.textContent = '已复制'
+    btn.classList.add('copied')
+    setTimeout(() => {
+      span.textContent = original
+      btn.classList.remove('copied')
+    }, 1500)
+  }
+}
+
+/** 预览 HTML/SVG 代码 */
+function previewCode(raw: string, lang: string) {
+  const w = window.open('', '_blank', 'width=900,height=700')
+  if (!w) return
+
+  let content: string
+  if (lang === 'svg' || lang === 'xml') {
+    // SVG: 直接渲染
+    content = raw
+  } else {
+    // HTML: 直接渲染
+    content = raw
+  }
+
+  w.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>代码预览</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { padding: 20px; background: #f5f5f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .preview-container { background: #fff; border-radius: 12px; box-shadow: 0 2px 20px rgba(0,0,0,0.1); padding: 30px; max-width: 100%; overflow: auto; }
+  svg, img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div class="preview-container">${content}</div>
+</body>
+</html>`)
+  w.document.close()
+}
+
+/** 处理代码块点击事件（事件委托） */
+function handleCodeClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const btn = target.closest('.code-btn') as HTMLElement | null
+  if (!btn) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  const rawEncoded = btn.dataset.raw
+  if (!rawEncoded) return
+  const raw = decodeURIComponent(rawEncoded)
+
+  if (btn.classList.contains('code-copy-btn')) {
+    copyCode(raw, btn)
+  } else if (btn.classList.contains('code-preview-btn')) {
+    const lang = btn.dataset.lang || 'html'
+    previewCode(raw, lang)
+  }
+}
+
+/** 绑定代码块点击事件 */
+function bindCodeEvents() {
+  if (messageContentRef.value) {
+    messageContentRef.value.addEventListener('click', handleCodeClick)
+  }
+}
+
+/** 解绑代码块点击事件 */
+function unbindCodeEvents() {
+  if (messageContentRef.value) {
+    messageContentRef.value.removeEventListener('click', handleCodeClick)
+  }
+}
+
+onMounted(() => {
+  nextTick(() => bindCodeEvents())
+})
+
+onUnmounted(() => {
+  unbindCodeEvents()
+})
+
+// 流式输出时重新绑定事件
+watch(renderedContent, () => {
+  nextTick(() => {
+    unbindCodeEvents()
+    bindCodeEvents()
+  })
+})
 </script>
 
 <template>
@@ -62,12 +179,20 @@ function viewFullImage(img: ImageAttachment) {
         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
         <circle cx="12" cy="7" r="4"/>
       </svg>
-      <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/>
-        <circle cx="12" cy="8" r="3" fill="currentColor" stroke="none"/>
-        <circle cx="8.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-        <circle cx="15.5" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-        <path d="M8.5 16.5c1 1 2.2 1.5 3.5 1.5s2.5-.5 3.5-1.5"/>
+      <svg v-else width="22" height="22" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 58 62 Q 48 35 62 48 Q 58 42 58 62 Z" fill="#3A3A42"/>
+        <path d="M 142 62 Q 152 35 138 48 Q 142 42 142 62 Z" fill="#3A3A42"/>
+        <ellipse cx="100" cy="118" rx="58" ry="62" fill="#3A3A42"/>
+        <ellipse cx="100" cy="128" rx="36" ry="42" fill="#E8E4DD"/>
+        <circle cx="80" cy="92" r="23" fill="#E8E4DD"/>
+        <circle cx="120" cy="92" r="23" fill="#E8E4DD"/>
+        <circle cx="80" cy="92" r="13" fill="#F5A623"/>
+        <circle cx="120" cy="92" r="13" fill="#F5A623"/>
+        <circle cx="80" cy="92" r="8" fill="#1A1A1A"/>
+        <circle cx="120" cy="92" r="8" fill="#1A1A1A"/>
+        <circle cx="84" cy="88" r="4" fill="#FFFFFF"/>
+        <circle cx="124" cy="88" r="4" fill="#FFFFFF"/>
+        <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
       </svg>
     </div>
 
@@ -76,23 +201,9 @@ function viewFullImage(img: ImageAttachment) {
       <div class="message-header">
         <span class="message-sender">{{ isUser ? '你' : '小禅' }}</span>
         <span class="message-time">{{ timeStr }}</span>
-        <button
-          class="msg-copy-btn"
-          :class="{ copied }"
-          :title="copied ? '已复制' : '复制'"
-          @click.stop="copyMessage"
-        >
-          <svg v-if="copied" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
-          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-          </svg>
-        </button>
       </div>
 
-      <div class="message-content" v-html="renderedContent"></div>
+      <div class="message-content" ref="messageContentRef" v-html="renderedContent"></div>
 
       <!-- 图片附件展示 (T-021) -->
       <div v-if="message.images && message.images.length > 0" class="message-images" data-testid="message-images">
@@ -118,6 +229,37 @@ function viewFullImage(img: ImageAttachment) {
 
       <!-- 执行追踪（完成后） -->
       <ExecutionTrace v-if="message.trace" :trace="message.trace" />
+
+      <!-- 消息底部操作栏 -->
+      <div v-if="!message.streaming && message.content" class="message-actions">
+        <button
+          class="msg-action-btn"
+          :class="{ copied }"
+          :title="copied ? '已复制' : '复制'"
+          @click.stop="copyMessage"
+        >
+          <svg v-if="copied" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>{{ copied ? '已复制' : '复制' }}</span>
+        </button>
+        <button
+          v-if="isAssistant"
+          class="msg-action-btn"
+          title="重新生成"
+          @click.stop="emit('retry')"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          <span>重试</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -203,44 +345,107 @@ function viewFullImage(img: ImageAttachment) {
   padding: 0;
 }
 
-/* ── 复制按钮 ── */
-.msg-copy-btn {
+/* ── 消息底部操作栏 ── */
+.message-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.chat-message:hover .message-actions {
+  opacity: 1;
+}
+
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   background: transparent;
   cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  padding: 4px 8px;
+  border-radius: 6px;
   color: var(--text-meta);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
 }
 
-.chat-message:hover .msg-copy-btn {
-  opacity: 0.6;
-}
-
-.msg-copy-btn:hover {
-  opacity: 1 !important;
+.msg-action-btn:hover {
   background: var(--surface-tint-hover);
   color: var(--text-primary);
 }
 
-.msg-copy-btn.copied {
-  opacity: 1 !important;
+.msg-action-btn.copied {
   color: var(--color-brand);
 }
 
 /* Markdown 样式 */
-.message-content :deep(.code-block) {
+.message-content :deep(.code-block-wrapper) {
   margin: 8px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #313244;
+}
+
+.message-content :deep(.code-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #181825;
+  border-bottom: 1px solid #313244;
+}
+
+.message-content :deep(.code-lang) {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6c7086;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.message-content :deep(.code-actions) {
+  display: flex;
+  gap: 4px;
+}
+
+.message-content :deep(.code-btn) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid #313244;
+  border-radius: 4px;
+  background: transparent;
+  color: #6c7086;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.message-content :deep(.code-btn:hover) {
+  background: #313244;
+  color: #cdd6f4;
+  border-color: #45475a;
+}
+
+.message-content :deep(.code-btn.copied) {
+  color: #a6e3a1 !important;
+  border-color: #a6e3a1 !important;
+}
+
+.message-content :deep(.code-btn span) {
+  line-height: 1;
+}
+
+.message-content :deep(.code-block) {
+  margin: 0;
   padding: 12px 14px;
   background: #1e1e2e;
-  border-radius: 8px;
   overflow-x: auto;
-  position: relative;
 }
 
 .message-content :deep(.code-block code) {

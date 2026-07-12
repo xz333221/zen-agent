@@ -1,6 +1,6 @@
 import { BrowserWindow, screen, ipcMain } from 'electron'
 import { join } from 'path'
-import { getPetWindow } from './pet-window'
+import { getConfig } from '@agent/providers/llm-config'
 
 let chatWindow: BrowserWindow | null = null
 
@@ -10,14 +10,14 @@ export function createChatWindow(): BrowserWindow {
   const { workArea } = screen.getPrimaryDisplay()
 
   // 根据屏幕工作区自适应窗口尺寸（4K/高分辨率屏幕自动放大）
-  const width = Math.min(1400, Math.max(800, Math.round(workArea.width * 0.38)))
-  const height = Math.min(1400, Math.max(820, Math.round(workArea.height * 0.85)))
-  const minWidth = Math.min(760, Math.max(520, Math.round(workArea.width * 0.25)))
-  const minHeight = Math.min(820, Math.max(600, Math.round(workArea.height * 0.6)))
+  const width = Math.min(2000, Math.max(1200, Math.round(workArea.width * 0.55)))
+  const height = Math.min(1800, Math.max(1000, Math.round(workArea.height * 0.92)))
+  const minWidth = Math.min(1100, Math.max(800, Math.round(workArea.width * 0.32)))
+  const minHeight = Math.min(1000, Math.max(760, Math.round(workArea.height * 0.7)))
 
-  // 默认位置：宠物旁边（右下角偏左）
-  const x = workArea.x + workArea.width - width - 240
-  const y = workArea.y + workArea.height - height - 20
+  // 默认位置：屏幕右侧偏下
+  const x = workArea.x + workArea.width - width - 40
+  const y = workArea.y + Math.round((workArea.height - height) / 2)
 
   chatWindow = new BrowserWindow({
     width,
@@ -30,8 +30,8 @@ export function createChatWindow(): BrowserWindow {
     minWidth,
     minHeight,
     show: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
+    skipTaskbar: false,
+    alwaysOnTop: false,
     hasShadow: true,
     webPreferences: {
       preload: join(__dirname, '../preload/chat.js'),
@@ -46,6 +46,17 @@ export function createChatWindow(): BrowserWindow {
   } else {
     chatWindow.loadFile(join(__dirname, '../renderer/chat/index.html'))
   }
+
+  // 应用保存的缩放比例
+  chatWindow.webContents.once('did-finish-load', () => {
+    try {
+      const config = getConfig()
+      const zoom = config.uiZoomFactor
+      if (zoom && typeof zoom === 'number' && zoom > 0) {
+        chatWindow?.webContents.setZoomFactor(Math.max(0.5, Math.min(3.0, zoom)))
+      }
+    } catch { /* ignore */ }
+  })
 
   chatWindow.on('close', (e) => {
     if (process.env.NODE_ENV !== 'test') {
@@ -69,20 +80,6 @@ export function showChatWindow(): void {
     createChatWindow()
   }
   if (chatWindow && !chatWindow.isVisible()) {
-    // 跟随宠物窗口位置
-    const petWin = getPetWindowSafe()
-    if (petWin) {
-      const [petX, petY] = petWin.getPosition()
-      const [petW] = petWin.getSize()
-      const [chatW, chatH] = chatWindow.getSize()
-      // 对话窗口出现在宠物左侧
-      const chatX = petX - chatW + petW + 40
-      const chatY = petY - 300
-      const { workArea } = screen.getPrimaryDisplay()
-      const clampedX = Math.max(workArea.x, Math.min(chatX, workArea.x + workArea.width - chatW))
-      const clampedY = Math.max(workArea.y, Math.min(chatY, workArea.y + workArea.height - chatH))
-      chatWindow.setPosition(clampedX, clampedY)
-    }
     chatWindow.show()
     chatWindow.focus()
   } else if (chatWindow) {
@@ -96,12 +93,4 @@ export function hideChatWindow(): void {
 
 export function getChatWindow(): BrowserWindow | null {
   return chatWindow
-}
-
-function getPetWindowSafe() {
-  try {
-    return getPetWindow()
-  } catch {
-    return null
-  }
 }

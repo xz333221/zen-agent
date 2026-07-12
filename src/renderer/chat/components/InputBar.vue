@@ -305,7 +305,8 @@ async function generateThumbnail(img: HTMLImageElement, maxSize: number): Promis
   canvas.height = Math.round(img.naturalHeight * ratio)
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/jpeg', 0.6)
+  // 只返回 base64 部分（不含 data: 前缀），与 data 字段格式保持一致
+  return canvas.toDataURL('image/jpeg', 0.6).split(',')[1]
 }
 
 /** 添加图片 */

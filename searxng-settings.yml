@@ -1,0 +1,24 @@
+# Read the documentation before extending the defaults:
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "t0JORmcsbO3SAFbhxJBbvMIQuP7dJCXM"
+  image_proxy: true
+  limiter: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json
+  default_lang: "zh-CN"
+  default_timeout: 8.0
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 20.0
+  # 使用 v2rayN 代理访问被墙的搜索引擎
+  proxies:
+    all://: http://localhost:10813

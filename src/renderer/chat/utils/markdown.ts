@@ -2,11 +2,15 @@
  * Markdown 渲染配置
  *
  * 使用 markdown-it + highlight.js 实现代码高亮、表格、链接等功能。
+ * 代码块支持复制和预览（HTML/SVG）功能。
  * 流式渲染优化：缓存渲染结果，避免重复渲染完整内容。
  */
 
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
+
+// ── 可预览的语言 ──
+const PREVIEWABLE_LANGS = ['html', 'svg', 'xml']
 
 // ── 创建 markdown-it 实例 ──
 const md = new MarkdownIt({
@@ -15,19 +19,39 @@ const md = new MarkdownIt({
   typographer: true,
   breaks: true,
   highlight(str: string, lang: string): string {
-    // 代码高亮
+    const escapedCode = md.utils.escapeHtml(str)
+    const langLower = (lang || '').toLowerCase()
+    const isPreviewable = PREVIEWABLE_LANGS.includes(langLower)
+
+    let highlighted: string
     if (lang && hljs.getLanguage(lang)) {
       try {
-        const highlighted = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value
-        return `<pre class="code-block"><code class="hljs language-${lang}">${highlighted}</code></pre>`
+        highlighted = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value
       } catch {
-        // fall through to default
+        highlighted = escapedCode
       }
+    } else {
+      highlighted = escapedCode
     }
 
-    // 没有语言标记或高亮失败，使用转义后的纯文本
-    const escaped = md.utils.escapeHtml(str)
-    return `<pre class="code-block"><code class="hljs">${escaped}</code></pre>`
+    // 构建带工具栏的代码块
+    const langLabel = lang || 'text'
+    const rawEncoded = encodeURIComponent(str)
+    const toolbar = `<div class="code-toolbar">
+      <span class="code-lang">${langLabel}</span>
+      <div class="code-actions">
+        <button class="code-btn code-copy-btn" data-raw="${rawEncoded}" title="复制代码">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>复制</span>
+        </button>
+        ${isPreviewable ? `<button class="code-btn code-preview-btn" data-raw="${rawEncoded}" data-lang="${langLower}" title="预览结果">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>预览</span>
+        </button>` : ''}
+      </div>
+    </div>`
+
+    return `<div class="code-block-wrapper" data-lang="${langLower}">${toolbar}<pre class="code-block"><code class="hljs language-${lang || 'text'}">${highlighted}</code></pre></div>`
   }
 })
 

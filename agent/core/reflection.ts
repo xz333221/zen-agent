@@ -23,15 +23,19 @@ export async function reflect(
   reactSteps: ReActStep[],
   signal?: AbortSignal
 ): Promise<ReflectDetail> {
+  // 安全防护：确保 finalOutput 是字符串
+  const safeOutput = typeof finalOutput === 'string' ? finalOutput : String(finalOutput ?? '')
+  const safeInput = typeof userInput === 'string' ? userInput : String(userInput ?? '')
+
   if (isLLMConfigured()) {
     try {
-      return await reflectWithLLM(userInput, finalOutput, reactSteps, signal)
+      return await reflectWithLLM(safeInput, safeOutput, reactSteps, signal)
     } catch (err) {
       console.warn('[Reflection] LLM reflection failed, falling back to rules:', err)
     }
   }
 
-  return reflectWithRules(userInput, finalOutput, reactSteps)
+  return reflectWithRules(safeInput, safeOutput, reactSteps)
 }
 
 /** 使用 LLM 进行反思 */

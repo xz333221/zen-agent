@@ -1,9 +1,10 @@
-import { ipcMain } from 'electron'
+import { ipcMain, app, shell } from 'electron'
+import { join } from 'path'
 import { IPC_CHANNELS, ChatMessage, type LLMProviderConfig, type TraceStep, type ExecutionTrace, type ImageAttachment } from '@shared/types'
 import { getPetWindow, setPetState } from '../windows/pet-window'
 import { getChatWindow, showChatWindow, hideChatWindow } from '../windows/chat-window'
 import { llm } from '@agent/providers/llm'
-import { loadConfig, getConfig, saveConfig, isLLMConfigured, getSystemPrompt } from '@agent/providers/llm-config'
+import { loadConfig, getConfig, saveConfig, isLLMConfigured, getSystemPrompt, getSearchConfig, setSearchConfig, getBrowserConfig, setBrowserConfig } from '@agent/providers/llm-config'
 import { ensureDatabase } from '../storage/database'
 import { createSession, getSession, updateSessionTitle, incrementMessageCount, getAllSessions, deleteSession } from '../storage/repositories/sessions'
 import { addMessage, getMessages, getRecentMessages } from '../storage/repositories/messages'
@@ -15,7 +16,7 @@ import * as pluginsWindowModule from '../windows/plugins-window'
 import { pluginManager } from '../plugins/plugin-manager'
 import { exportData, importData } from '../storage/data-export'
 import { ollamaManager } from '../offline/ollama-manager'
-import type { ExportOptions, OllamaPullProgress, MCPServerConfig, MCPTestResult, Skill } from '@shared/types'
+import type { ExportOptions, OllamaPullProgress, MCPServerConfig, MCPTestResult, Skill, DataPaths, SearchConfig, BrowserConfig } from '@shared/types'
 import { getShortcutConfig, setShortcutConfig, reregisterShortcuts } from '../shortcuts'
 import { getThemeMode, setThemeMode, getEffectiveTheme } from '../theme'
 import {
@@ -86,6 +87,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerDataHandlers()
   registerOllamaHandlers()
   registerMCPHandlers()
+  registerDataPathHandlers()
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -111,6 +113,14 @@ function registerChatHandlers(): void {
       createSession(sid)
     }
 
+    // 如果会话标题还是默认的"新对话"，根据第一条用户消息自动生成标题
+    const existingSession = getSession(sid)
+    if (existingSession && (existingSession.title === '新对话' || !existingSession.title)) {
+      // 取用户消息前 30 个字符作为标题
+      const autoTitle = message.trim().slice(0, 30) + (message.trim().length > 30 ? '...' : '')
+      updateSessionTitle(sid, autoTitle)
+    }
+
     // 保存用户消息到 SQLite
     addMessage(sid, {
       id: `user-${Date.now()}`,
@@ -119,6 +129,9 @@ function registerChatHandlers(): void {
       timestamp: Date.now(),
       images: images
     })
+
+    // 更新消息计数
+    incrementMessageCount(sid)
 
     // ── 通过 AgentLoop 执行（ReAct 循环 + 追踪步骤） ──
     // AgentLoop 内部会检测 LLM 是否配置，未配置时使用 mock 响应
@@ -220,6 +233,9 @@ function registerChatHandlers(): void {
         trace: result.trace
       })
 
+      // 更新消息计数
+      incrementMessageCount(sid)
+
       chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_DONE, { messageId })
       setPetState('happy')
 
@@ -231,7 +247,12 @@ function registerChatHandlers(): void {
     } catch (err) {
       currentAbortController = null
       const error = err as Error
+      console.error(`[IPC] CHAT_SEND error — messageId=${messageId}, name=${error?.name}, message=${error?.message}`)
+      if (error?.stack) {
+        console.error('[IPC] CHAT_SEND stack:', error.stack.split('\n').slice(0, 8).join('\n'))
+      }
       const errorInfo = classifyError(error)
+      console.error(`[IPC] CHAT_SEND classified — type=${errorInfo.type}, userMessage="${errorInfo.userMessage}"`)
 
       // 如果是用户主动中止，不报错
       if (errorInfo.type === 'aborted') {
@@ -340,6 +361,69 @@ function registerChatHandlers(): void {
       return { success: false, error: error.message || '语音识别失败' }
     }
   })
+
+  // 获取基于历史记录的推荐问题
+  ipcMain.handle(IPC_CHANNELS.CHAT_GET_SUGGESTIONS, async () => {
+    if (!isLLMConfigured()) {
+      // 未配置 LLM 时返回默认建议
+      return getDefaultSuggestions()
+    }
+
+    try {
+      // 获取所有会话的最近消息
+      const sessions = getAllSessions()
+      const recentMessages: Array<{ role: string; content: string }> = []
+
+      for (const session of sessions.slice(0, 5)) {
+        const msgs = getRecentMessages(session.id, 4)
+        for (const msg of msgs) {
+          if (msg.content && msg.content.trim()) {
+            recentMessages.push({ role: msg.role, content: msg.content.slice(0, 200) })
+          }
+        }
+      }
+
+      if (recentMessages.length === 0) {
+        return getDefaultSuggestions()
+      }
+
+      // 构建生成建议的 prompt
+      const historyText = recentMessages
+        .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`)
+        .join('\n')
+
+      const prompt = `基于以下用户最近的对话历史，生成 4 个用户可能想问的问题。要求：
+1. 问题要与用户兴趣相关，基于历史对话内容
+2. 问题要简洁明了，不超过 20 个字
+3. 每行一个问题，不要编号
+4. 只输出问题本身，不要其他内容
+
+对话历史：
+${historyText}
+
+建议问题：`
+
+      const config = getConfig()
+      const modelKey = config.fastModel || config.defaultModel
+      const response = await llm.chat({
+        messages: [{ role: 'user', content: prompt }],
+        ...(modelKey ? { modelKey } : {}),
+        temperature: 0.8,
+        maxTokens: 300
+      })
+
+      const suggestions = response
+        .split('\n')
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0 && s.length <= 50)
+        .slice(0, 4)
+
+      return suggestions.length > 0 ? suggestions : getDefaultSuggestions()
+    } catch (err) {
+      console.error('[IPC] Failed to generate suggestions:', err)
+      return getDefaultSuggestions()
+    }
+  })
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -374,7 +458,7 @@ function registerSystemHandlers(): void {
   })
 
   // 保存配置
-  ipcMain.handle(IPC_CHANNELS.SYS_SET_CONFIG, async (_event, data: { providers?: LLMProviderConfig[]; defaultModel?: string; embeddingModel?: string; agent?: Partial<typeof DEFAULT_AGENT_CONFIG>; mcpServers?: MCPServerConfig[] }) => {
+  ipcMain.handle(IPC_CHANNELS.SYS_SET_CONFIG, async (_event, data: { providers?: LLMProviderConfig[]; defaultModel?: string; embeddingModel?: string; agent?: Partial<typeof DEFAULT_AGENT_CONFIG>; mcpServers?: MCPServerConfig[]; search?: Partial<SearchConfig> }) => {
     const config = getConfig()
 
     if (data.providers !== undefined) {
@@ -391,6 +475,9 @@ function registerSystemHandlers(): void {
     }
     if (data.mcpServers !== undefined) {
       config.mcpServers = data.mcpServers
+    }
+    if (data.search) {
+      config.search = { ...config.search, ...data.search }
     }
 
     saveConfig(config)
@@ -887,12 +974,23 @@ function registerOllamaHandlers(): void {
 
 /** 错误分类 — 将底层错误转为用户友好的消息 */
 function classifyError(error: Error): {
-  type: 'network' | 'auth' | 'rate_limit' | 'aborted' | 'unknown'
+  type: 'network' | 'auth' | 'rate_limit' | 'aborted' | 'timeout' | 'unknown'
   userMessage: string
 } {
-  const msg = error.message.toLowerCase()
+  const msg = (error?.message || String(error ?? '')).toLowerCase()
 
-  if (msg.includes('aborted') || msg.includes('abort')) {
+  // ⚠ 先检查超时 — 超时的 error message 包含 "timed out"，必须优先于 abort 检查
+  // 因为 withTimeout 超时后会 abort signal，OpenAI SDK 会报 "aborted" 但根本原因是超时
+  if (msg.includes('timed out') || msg.includes('timeout')) {
+    return { type: 'timeout', userMessage: '请求超时，请稍后重试或检查网络连接' }
+  }
+
+  // 用户主动中止（点击停止按钮）— 仅匹配纯 abort，排除 timeout
+  if (msg === 'aborted' || msg.includes('user abort') || msg.includes('request was aborted')) {
+    // 进一步检查是否为超时导致的 abort
+    if (msg.includes('timed out') || msg.includes('timeout')) {
+      return { type: 'timeout', userMessage: '请求超时，请稍后重试或检查网络连接' }
+    }
     return { type: 'aborted', userMessage: '已停止生成' }
   }
 
@@ -904,15 +1002,11 @@ function classifyError(error: Error): {
     return { type: 'rate_limit', userMessage: '请求过于频繁，请稍后重试' }
   }
 
-  if (msg.includes('timeout') || msg.includes('timed out')) {
-    return { type: 'network', userMessage: '请求超时，请检查网络连接' }
-  }
-
   if (msg.includes('econnrefused') || msg.includes('enetunreach') || msg.includes('fetch failed')) {
     return { type: 'network', userMessage: '无法连接到 API 服务器，请检查网络或 baseURL 配置' }
   }
 
-  return { type: 'unknown', userMessage: `发生错误: ${error.message}` }
+  return { type: 'unknown', userMessage: `发生错误: ${error?.message || String(error ?? '未知错误')}` }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1022,6 +1116,170 @@ function registerMCPHandlers(): void {
       } as MCPTestResult
     }
   })
+}
+
+/**
+ * 注册数据路径 & 缩放设置处理器
+ */
+function registerDataPathHandlers(): void {
+  // 获取数据路径
+  ipcMain.handle(IPC_CHANNELS.SYS_GET_DATA_PATHS, async (): Promise<DataPaths> => {
+    const userDataPath = app.getPath('userData')
+    return {
+      configFile: join(userDataPath, 'config.json'),
+      databaseFile: join(userDataPath, 'zen-agent.db'),
+      dataDir: userDataPath,
+      skillsDir: join(userDataPath, 'skills'),
+      pluginsDir: join(userDataPath, 'plugins'),
+      logsDir: join(userDataPath, 'logs')
+    }
+  })
+
+  // 在文件管理器中打开
+  ipcMain.handle(IPC_CHANNELS.SYS_OPEN_IN_FOLDER, async (_event, path: string) => {
+    try {
+      // 如果是目录，直接打开；如果是文件，显示文件在文件夹中
+      await shell.openPath(path)
+      return { success: true }
+    } catch (e) {
+      console.error('[IPC] Failed to open path:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // 获取缩放比例
+  ipcMain.handle(IPC_CHANNELS.SYS_GET_ZOOM, async () => {
+    try {
+      const win = getChatWindow()
+      if (win && !win.isDestroyed()) {
+        return win.webContents.getZoomFactor()
+      }
+      return 1.0
+    } catch {
+      return 1.0
+    }
+  })
+
+  // 设置缩放比例（应用到所有窗口）
+  ipcMain.handle(IPC_CHANNELS.SYS_SET_ZOOM, async (_event, zoom: number) => {
+    try {
+      const clampedZoom = Math.max(0.5, Math.min(3.0, zoom))
+
+      // 应用到聊天窗口
+      const chatWin = getChatWindow()
+      if (chatWin && !chatWin.isDestroyed()) {
+        chatWin.webContents.setZoomFactor(clampedZoom)
+      }
+
+      // 应用到设置窗口
+      const settingsWin = settingsWindowModule.getSettingsWindow()
+      if (settingsWin && !settingsWin.isDestroyed()) {
+        settingsWin.webContents.setZoomFactor(clampedZoom)
+      }
+
+      // 持久化到 config
+      const config = getConfig()
+      config.uiZoomFactor = clampedZoom
+      saveConfig(config)
+
+      return { success: true, zoom: clampedZoom }
+    } catch (e) {
+      console.error('[IPC] Failed to set zoom:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // ── 搜索配置 (T-025) ──
+  ipcMain.handle(IPC_CHANNELS.SEARCH_GET_CONFIG, async () => {
+    try {
+      return getSearchConfig()
+    } catch (e) {
+      console.error('[IPC] Failed to get search config:', e)
+      return null
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SEARCH_SET_CONFIG, async (_event, search: Partial<SearchConfig>) => {
+    try {
+      setSearchConfig(search)
+      return { success: true }
+    } catch (e) {
+      console.error('[IPC] Failed to set search config:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SEARCH_TEST, async (_event, data: { query: string; config: SearchConfig }) => {
+    try {
+      const { performSearch } = await import('@agent/tools/web-search')
+      const results = await performSearch(data.query, data.config)
+      return { success: true, results }
+    } catch (e: any) {
+      console.error('[IPC] Search test failed:', e)
+      return { success: false, error: e?.message || String(e) }
+    }
+  })
+
+  // ── 浏览器配置 ──
+  ipcMain.handle(IPC_CHANNELS.BROWSER_GET_CONFIG, async () => {
+    try {
+      return getBrowserConfig()
+    } catch (e) {
+      console.error('[IPC] Failed to get browser config:', e)
+      return null
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SET_CONFIG, async (_event, browser: Partial<BrowserConfig>) => {
+    try {
+      setBrowserConfig(browser)
+      return { success: true }
+    } catch (e) {
+      console.error('[IPC] Failed to set browser config:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SELECT_DIR, async () => {
+    try {
+      const { dialog } = await import('electron')
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory'],
+        title: '选择浏览器用户数据目录'
+      })
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, canceled: true }
+      }
+      return { success: true, path: result.filePaths[0] }
+    } catch (e) {
+      console.error('[IPC] Failed to select browser dir:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_DETECT_USER_DATA_DIR, async () => {
+    try {
+      const { browserManager } = await import('@agent/tools/browser-manager')
+      const result = browserManager.findChromeUserDataDir()
+      if (result) {
+        return { success: true, ...result }
+      }
+      return { success: false, error: '未找到 Chrome 用户数据目录，请手动选择' }
+    } catch (e) {
+      console.error('[IPC] Failed to detect browser user data dir:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+}
+
+/** 默认推荐问题（未配置 LLM 或无历史记录时使用） */
+function getDefaultSuggestions(): string[] {
+  return [
+    '帮我写一个 Vue 组件',
+    '写一篇技术文章',
+    '搜索最新技术资讯',
+    '分析一段数据'
+  ]
 }
 
 /** 获取模拟响应内容（未配置 LLM 时使用） */

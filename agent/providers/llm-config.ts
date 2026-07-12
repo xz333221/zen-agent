@@ -8,8 +8,8 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import type { LLMProviderConfig, AgentConfig, MCPServerConfig } from '@shared/types'
-import { DEFAULT_AGENT_CONFIG } from '@shared/types'
+import type { LLMProviderConfig, AgentConfig, MCPServerConfig, SearchConfig, BrowserConfig } from '@shared/types'
+import { DEFAULT_AGENT_CONFIG, DEFAULT_SEARCH_CONFIG, DEFAULT_BROWSER_CONFIG } from '@shared/types'
 import type { ProviderEntry } from './types'
 import { llm } from './llm'
 
@@ -24,6 +24,12 @@ export interface AppConfig {
   embeddingModelKey: string
   /** MCP 服务器列表 */
   mcpServers: MCPServerConfig[]
+  /** UI 缩放比例 (0.5 - 3.0) */
+  uiZoomFactor?: number
+  /** 搜索配置 */
+  search?: SearchConfig
+  /** 浏览器自动化配置 */
+  browser?: BrowserConfig
 }
 
 // ── 默认配置 ──
@@ -32,7 +38,9 @@ const DEFAULT_CONFIG: AppConfig = {
   agent: { ...DEFAULT_AGENT_CONFIG },
   defaultModelKey: '',
   embeddingModelKey: '',
-  mcpServers: []
+  mcpServers: [],
+  search: { ...DEFAULT_SEARCH_CONFIG },
+  browser: { ...DEFAULT_BROWSER_CONFIG }
 }
 
 let currentConfig: AppConfig = { ...DEFAULT_CONFIG }
@@ -62,7 +70,15 @@ export function loadConfig(): AppConfig {
         agent: { ...DEFAULT_AGENT_CONFIG, ...parsed.agent },
         defaultModelKey: parsed.defaultModelKey ?? '',
         embeddingModelKey: parsed.embeddingModelKey ?? '',
-        mcpServers: parsed.mcpServers ?? []
+        mcpServers: parsed.mcpServers ?? [],
+        uiZoomFactor: parsed.uiZoomFactor ?? 1.0,
+        search: { ...DEFAULT_SEARCH_CONFIG, ...parsed.search },
+        browser: { ...DEFAULT_BROWSER_CONFIG, ...parsed.browser }
+      }
+      // 向后兼容：旧配置没有 userDataMode 字段
+      if (!currentConfig.browser.userDataMode) {
+        // 如果旧配置有 userDataDir，推断为 custom 模式；否则用默认的 app-dedicated
+        currentConfig.browser.userDataMode = currentConfig.browser.userDataDir ? 'custom' : 'app-dedicated'
       }
     }
   } catch (err) {
@@ -158,6 +174,28 @@ export function getEmbeddingModelKey(): string {
 /** 设置嵌入模型 */
 export function setEmbeddingModel(modelKey: string): void {
   currentConfig.embeddingModelKey = modelKey
+  saveConfig(currentConfig)
+}
+
+/** 获取浏览器配置 */
+export function getBrowserConfig(): BrowserConfig {
+  return { ...DEFAULT_BROWSER_CONFIG, ...getConfig().browser }
+}
+
+/** 设置浏览器配置 */
+export function setBrowserConfig(browser: Partial<BrowserConfig>): void {
+  currentConfig.browser = { ...getBrowserConfig(), ...browser }
+  saveConfig(currentConfig)
+}
+
+/** 获取搜索配置 */
+export function getSearchConfig(): SearchConfig {
+  return getConfig().search ?? { ...DEFAULT_SEARCH_CONFIG }
+}
+
+/** 设置搜索配置 */
+export function setSearchConfig(search: Partial<SearchConfig>): void {
+  currentConfig.search = { ...getSearchConfig(), ...search }
   saveConfig(currentConfig)
 }
 
