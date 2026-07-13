@@ -27,7 +27,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 解释关键逻辑和设计决策
 - 关注代码质量和最佳实践
 - 当需要操作浏览器时，使用 browser_navigate、browser_get_text、browser_click、browser_type、browser_screenshot 等工具`,
-    tools: ['code_executor', 'file_reader', 'web_search', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
+    tools: ['code_executor', 'file_reader', 'web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 8000,
@@ -48,7 +48,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 区分事实和观点
 - 列出关键发现
 - 必要时引用来源`,
-    tools: ['web_search'],
+    tools: ['web_search', 'fetch_url'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -112,7 +112,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 必要时提供示例
 - 坦诚面对不确定的问题
 - 当需要打开网页或操作浏览器时，使用 open_url 或 browser_navigate 等工具`,
-    tools: ['web_search', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
+    tools: ['web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -322,14 +322,53 @@ CONTENT: <回答>
 
       // 将 LLM 回复和工具结果加入对话，继续下一轮
       conversationMessages.push({ role: 'assistant', content: response })
+
+      // 构建详细的工具结果观察文本（包含实际内容，不只是摘要）
+      let observationText = toolResult.success
+        ? toolResult.resultSummary
+        : `失败: ${toolResult.error || toolResult.resultSummary}`
+      if (toolResult.success && toolResult.result && typeof toolResult.result === 'object') {
+        const result = toolResult.result as {
+          content?: string
+          url?: string
+          results?: Array<{ index?: number; title?: string; url?: string; snippet?: string; content?: string }>
+          stdout?: string
+          stderr?: string
+          exitCode?: number
+        }
+        // fetch_url 结果：包含 top-level content 字段
+        if (typeof result.content === 'string' && result.url && !result.results) {
+          observationText = `${toolResult.resultSummary}\n\n--- 抓取内容 ---\n${result.content}`
+        }
+        // web_search 结果
+        else if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+          observationText = `${toolResult.resultSummary}\n\n搜索结果详情：`
+          for (const r of result.results) {
+            observationText += `\n[${r.index || '?'}] ${r.title || '(无标题)'}\n`
+            observationText += `  链接: ${r.url || ''}\n`
+            if (r.snippet) observationText += `  摘要: ${r.snippet}\n`
+            if (r.content) observationText += `  内容: ${r.content}\n`
+          }
+        }
+        // terminal 结果
+        else if (typeof result.stdout === 'string' || typeof result.stderr === 'string') {
+          if (result.stdout && result.stdout.trim()) {
+            observationText += `\n--- stdout ---\n${result.stdout}`
+          }
+          if (result.stderr && result.stderr.trim()) {
+            observationText += `\n--- stderr ---\n${result.stderr}`
+          }
+        }
+      }
+
       conversationMessages.push({
         role: 'user',
         content: `工具 ${action} 执行结果:
-${toolResult.success ? toolResult.resultSummary : '失败: ' + (toolResult.error || toolResult.resultSummary)}
+${observationText}
 
-请继续。如果已完成所有步骤，使用 FINAL_ANSWER 给出总结。`
+请继续。如果已完成所有步骤，使用 FINAL_ANSWER 给出总结。如果搜索结果不包含需要的具体数据，可以换关键词再搜索或使用 fetch_url 抓取搜索结果中的页面。`
       })
-      totalInputTokens += countTextTokens(toolResult.resultSummary)
+      totalInputTokens += countTextTokens(observationText)
     }
 
     // 循环耗尽，生成总结

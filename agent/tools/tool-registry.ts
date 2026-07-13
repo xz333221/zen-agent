@@ -11,6 +11,7 @@ import { fileReader } from './file-reader'
 import { fileWriter } from './file-writer'
 import { codeExecutor } from './code-executor'
 import { webSearch } from './web-search'
+import { fetchUrl } from './fetch-url'
 import { openUrl } from './open-url'
 import { browserTools } from './browser-tools'
 import { terminal } from './terminal'
@@ -23,6 +24,7 @@ const builtinTools: ToolExecutor[] = [
   fileWriter,
   codeExecutor,
   webSearch,
+  fetchUrl,
   openUrl,
   terminal,
   ...browserTools

@@ -24,7 +24,7 @@ test.afterEach(async () => {
 
 test.describe('内置工具集 (T-012)', () => {
 
-  test('工具注册表包含 4 个内置工具', async () => {
+  test('工具注册表包含所有内置工具', async () => {
     testApp = await launchApp()
     const { chatWindow } = testApp
 
@@ -34,13 +34,14 @@ test.describe('内置工具集 (T-012)', () => {
 
     expect(tools).toBeTruthy()
     expect(Array.isArray(tools)).toBeTruthy()
-    expect(tools.length).toBe(4)
+    expect(tools.length).toBeGreaterThanOrEqual(9)
 
     const toolIds = tools.map((t: any) => t.id)
     expect(toolIds).toContain('calculator')
     expect(toolIds).toContain('file_reader')
     expect(toolIds).toContain('code_executor')
     expect(toolIds).toContain('web_search')
+    expect(toolIds).toContain('fetch_url')
   })
 
   test('计算器工具正确执行基本运算', async () => {

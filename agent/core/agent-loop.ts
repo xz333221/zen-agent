@@ -385,7 +385,7 @@ export class AgentLoop {
         // ── 纠偏机制 1：未使用工具就回答 ──
         // 如果第一轮 LLM 就想直接回答（没用过任何工具），但用户的问题明显需要本地操作，
         // 注入强提醒让 LLM 使用 terminal/file_reader 等工具，然后重试
-        if (i === 0 && reactSteps.length === 0 && this.shouldUseTool(userInput, toolNames)) {
+        if (i === 0 && reactSteps.length === 0 && this.shouldUseTool(userInput, toolNames, historyMessages)) {
           console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER without tools, but user input suggests tool use. Injecting nudge and retrying.`)
 
           // 不输出给用户，直接注入一个观察结果让 LLM 重新思考
@@ -403,17 +403,83 @@ export class AgentLoop {
           continue
         }
 
+        // ── 纠偏机制 1.5：未搜索就输出具体数据（复用旧对话数据） ──
+        // LLM 没有使用任何工具，但最终回答中包含具体数据（数字、时间戳、表格等），
+        // 说明它直接复用了对话历史中的旧数据，而不是搜索获取最新数据。
+        // 这种情况在 follow-up 请求中尤其常见（如用户说"给我准确的数据"）。
+        const finalText = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+        const hasExecutedTools = reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
+        const hasNotUsedTools = reactSteps.length === 0 || !hasExecutedTools
+        if (hasNotUsedTools && i === 0 && i < MAX_ITERATIONS - 2) {
+          const answerText = (parsed.actionInput || parsed.content || thinkResponse || '')
+          const answerLower = answerText.toLowerCase()
+
+          // 检测回答中是否包含具体数据模式
+          const hasSpecificData =
+            // 包含具体数字（如 3993.33, -0.07%, 4027.26 等）
+            /\d{3,}\.\d{2}/.test(answerText) ||
+            // 包含时间戳（如 09:23, 11:40, 15:00 等）
+            /\d{1,2}:\d{2}/.test(answerText) ||
+            // 包含"数据未获取到"等放弃措辞
+            answerLower.includes('数据未获取') || answerLower.includes('数据加载中') ||
+            // 包含表格格式（markdown table）
+            /\|.*\d.*\|/.test(answerText) ||
+            // 包含具体价格/点数
+            /点|元|港元|美元/.test(answerText) && /\d{3,}/.test(answerText)
+
+          // 检测对话历史中是否包含实时数据话题
+          let hasRealtimeContext = false
+          if (historyMessages && historyMessages.length > 0) {
+            const recentContext = historyMessages
+              .slice(-6)
+              .map(m => m.content)
+              .join(' ')
+              .toLowerCase()
+            const realtimeTopics = [
+              '股价', '大盘', '指数', '上证', '深证', '创业板', 'a股', '股票',
+              '行情', '涨跌', '收盘', '开盘', '盘中', '天气', '气温', '汇率',
+              '油价', '金价', '新闻', '今日行情',
+            ]
+            hasRealtimeContext = realtimeTopics.some(kw => recentContext.includes(kw))
+          }
+
+          if (hasSpecificData && hasRealtimeContext) {
+            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains specific data without tool use. Likely reusing stale conversation data. Injecting nudge.`)
+
+            reactSteps.push({
+              think: parsed.thought,
+              action: 'FINAL_ANSWER',
+              actionInput: {},
+              observation: `[系统提醒] 你的回答中包含具体数据（数字、时间戳等），但你没有使用任何工具搜索获取最新数据。这些数据很可能来自之前对话中的旧信息，可能已经过时。
+
+⚠️ 重要：不要直接复用对话历史中的数据来回答用户！当用户要求"准确的数据"或"更新"时，你必须使用 web_search 工具重新搜索获取最新数据。
+
+请重新思考：
+1. 用户想要什么数据？（如大盘指数、股价、天气等）
+2. 你应该用什么搜索关键词？（简洁精准，如"上证指数 今日行情"）
+3. 请使用 web_search 工具搜索，然后基于搜索结果回答。
+
+请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 web_search 工具获取最新数据。`
+            })
+
+            // 移除刚创建的 Think 步骤（因为要重试）
+            this.steps.pop()
+
+            // 不标记完成，继续循环
+            continue
+          }
+        }
+
         // ── 纠偏机制 2：使用了工具但不信任结果 ──
         // LLM 成功执行了工具，但在最终回答中声称"结果不可信"、"在沙箱中"等。
         // 这种情况下，注入提醒让 LLM 信任工具结果。
-        const finalText = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+        // （finalText 和 hasExecutedTools 已在纠偏机制 1.5 中声明）
         const distrustPatterns = [
           '沙箱', 'sandbox', '不可信', '并不真实', '不真实', '虚假',
           '无法访问', '不能真正', '不能访问', '无法真正',
           '我没有你的', '我无法替你', '本地 powershell',
           '远程', '容器', 'container',
         ]
-        const hasExecutedTools = reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
         const hasDistrust = distrustPatterns.some(p => finalText.includes(p))
 
         if (hasExecutedTools && hasDistrust && i < MAX_ITERATIONS - 2) {
@@ -431,6 +497,72 @@ export class AgentLoop {
 
           // 不标记完成，继续循环
           continue
+        }
+
+        // ── 纠偏机制 3：搜索结果不足就放弃 ──
+        // LLM 执行了 web_search，但最终回答中包含"数据加载中""盘中""尚未稳定"等措辞，
+        // 说明搜索结果没有获取到用户需要的具体数据，但 LLM 直接放弃了。
+        // 此时注入提醒，让 LLM 换关键词再搜索或用 fetch_url 抓取具体页面。
+        const searchNudgePatterns = [
+          '数据加载中', '加载中', '尚未稳定', '尚未返回', '暂无数据',
+          '盘中动态可查', '盘中实时刷新', '数据加载', '暂未返回',
+          '未找到关于', '未找到', '无搜索结果', '搜索结果为空',
+          '无法获取', '未能获取', '获取失败',
+          '建议你', '建议查看', '建议你查看',  // 过度推卸给用户
+        ]
+        const hasSearchNudge = searchNudgePatterns.some(p => finalText.includes(p))
+        const searchCount = reactSteps.filter(s => s.action === 'web_search').length
+        const fetchCount = reactSteps.filter(s => s.action === 'fetch_url').length
+        const hasSearchTool = toolNames.includes('web_search')
+        const hasFetchTool = toolNames.includes('fetch_url')
+
+        if (hasExecutedTools && hasSearchNudge && hasSearchTool && i < MAX_ITERATIONS - 2) {
+          // 限制纠偏次数：最多纠偏 2 次（总共最多 3 次搜索）
+          if (searchCount < 3) {
+            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains "data not found" patterns after search. Injecting nudge to search again or fetch URL.`)
+
+            // 收集搜索结果中的 URL，供 LLM 参考
+            const searchUrls: string[] = []
+            for (const step of reactSteps) {
+              if (step.action === 'web_search' && step.observation) {
+                const urlMatches = step.observation.match(/链接:\s*(https?:\/\/[^\s\n]+)/g)
+                if (urlMatches) {
+                  for (const m of urlMatches) {
+                    const url = m.replace(/链接:\s*/, '').trim()
+                    if (!searchUrls.includes(url)) searchUrls.push(url)
+                  }
+                }
+              }
+            }
+
+            const urlList = searchUrls.length > 0
+              ? `\n之前搜索结果中的 URL（可以用 fetch_url 抓取）：\n${searchUrls.slice(0, 5).map((u, idx) => `  ${idx + 1}. ${u}`).join('\n')}`
+              : ''
+
+            const fetchHint = hasFetchTool
+              ? `\n或者使用 fetch_url 工具抓取之前搜索结果中的具体页面 URL，获取页面中的实时数据。`
+              : ''
+
+            reactSteps.push({
+              think: parsed.thought,
+              action: 'FINAL_ANSWER',
+              actionInput: {},
+              observation: `[系统提醒] 你的回答中包含"数据加载中"/"暂无数据"等措辞，说明你还没有获取到用户需要的具体数据。不要轻易放弃！请尝试以下策略：
+1. 换不同关键词再搜索一次（用更短、更精准的关键词，如"上证指数 今日" 而不是 "2026年7月13日 A股大盘走势 上证指数"）
+2. 如果之前搜索结果中有可能包含数据的页面 URL，使用 fetch_url 工具抓取该页面内容${fetchHint}
+3. 尝试搜索数据源网站的页面（如东方财富 quote.eastmoney.com、雪球 xueqiu.com 等）
+
+已搜索 ${searchCount} 次，已抓取 ${fetchCount} 个页面。${urlList}
+
+请继续尝试，直到获取到实际数据或确认确实无法获取后再回答。`
+            })
+
+            // 移除刚创建的 Think 步骤（因为要重试）
+            this.steps.pop()
+
+            // 不标记完成，继续循环
+            continue
+          }
         }
 
         finalOutput = parsed.actionInput || parsed.content || thinkResponse
@@ -532,6 +664,12 @@ export class AgentLoop {
             cwd?: string
             platform?: string
             shell?: string
+            // fetch_url 结果
+            url?: string
+            finalUrl?: string
+            contentType?: string
+            content?: string
+            length?: number
           }
 
           // ── terminal 命令输出 ──
@@ -568,6 +706,11 @@ export class AgentLoop {
                 observationText += `  内容: ${r.content}\n`
               }
             }
+          }
+
+          // ── fetch_url 网页抓取结果 ──
+          else if (typeof result.content === 'string' && result.url) {
+            observationText = `${toolResult.resultSummary}\n\n--- 抓取内容 ---\n${result.content}`
           }
         }
 
@@ -626,6 +769,7 @@ export class AgentLoop {
   private buildReActSystemPrompt(toolNames: string[]): string {
     const basePrompt = getSystemPrompt()
     const hasWebSearch = toolNames.includes('web_search')
+    const hasFetchUrl = toolNames.includes('fetch_url')
     const hasOpenUrl = toolNames.includes('open_url')
     const hasBrowser = toolNames.includes('browser_navigate')
     const hasTerminal = toolNames.includes('terminal')
@@ -637,12 +781,43 @@ export class AgentLoop {
 
     const webSearchHint = hasWebSearch
       ? `\n\n⚠️ 重要规则 — 何时必须使用 web_search 工具：
-- 当用户询问最新、当前、实时信息时（如"最新模型""当前价格""今天新闻"）
+- 当用户询问最新、当前、实时信息时（如"最新模型""当前价格""今天新闻""今天大盘"）
 - 当你的训练数据可能过时，无法确保信息准确时
 - 当用户明确要求搜索或查询外部信息时
 - 当涉及版本号、发布日期、产品规格等可能变化的信息时
 对于以上情况，必须先使用 web_search 搜索获取最新信息，再基于搜索结果回答。
-不要凭记忆回答可能过时的信息，这比承认不确定更糟糕。`
+不要凭记忆回答可能过时的信息，这比承认不确定更糟糕。
+
+🔍 搜索策略 — 多步搜索，不要一次就放弃：
+- 搜索关键词要简洁精准，不要在关键词中放完整日期和长描述
+  ✓ 好的查询: "上证指数 今日行情" / "A股 大盘 今日" / "上证指数 实时"
+  ✗ 差的查询: "2026年7月13日 A股大盘走势 上证指数" （太长太具体，搜索引擎匹配不到实时数据）
+- 如果第一次搜索结果不包含用户需要的具体数据（如具体数值、价格等），不要直接放弃说"数据加载中"
+  → 应该换不同关键词再搜索一次（如换更短的关键词、换同义词）
+  → 或者用 fetch_url 工具抓取搜索结果中可能包含数据的页面 URL
+  → 最多尝试 3 次不同关键词的搜索 + 2 次 fetch_url 抓取
+- 对于金融/股票数据，搜索结果通常返回东方财富、雪球、新浪财经等网站入口页，
+  这些页面的摘要不含实时数据，需要用 fetch_url 抓取具体页面内容才能获取数值
+- 绝对不要在没有获取到实际数据的情况下编造或声称"数据加载中"，
+  应该坦诚说未能获取到实时数据，并告知用户可以查看的数据源链接`
+      : ''
+
+    const fetchUrlHint = hasFetchUrl
+      ? `\n\n📋 网页抓取工具 — 获取搜索结果中具体页面的详细内容：
+当 web_search 返回的搜索结果摘要不包含用户需要的具体数据时，使用 fetch_url 工具抓取搜索结果中的页面。
+
+典型场景：
+- 用户询问实时数据（股价、天气、新闻等），但搜索结果只有网站入口页，没有具体数据
+- 搜索结果摘要太短，需要更多上下文
+- 需要验证搜索结果中的具体信息
+
+使用方法：
+- fetch_url: {"url": "https://quote.eastmoney.com/zs000001.html", "maxLength": 8000}
+- 先用 web_search 找到相关页面 URL，再用 fetch_url 抓取具体内容
+- 对于金融数据，可以尝试抓取 API 接口 URL 获取 JSON 数据
+
+⚠️ 重要：当搜索结果的摘要中没有用户需要的具体数据时，不要直接说"数据加载中"或"暂无数据"，
+应该主动使用 fetch_url 抓取搜索结果中可能包含数据的页面（如东方财富、雪球等）。`
       : ''
 
     const openUrlHint = hasOpenUrl
@@ -723,6 +898,8 @@ ACTION_INPUT: <JSON 格式的工具参数>
 规则：
 - 涉及实时信息或可能过时的信息时，优先使用 web_search 工具搜索
 - 搜索时使用当前年份（${new Date().getFullYear()}年）作为关键词，不要用旧年份
+- ⚠️ 绝对不要直接复用对话历史中的旧数据来回答用户！当用户要求"准确的数据""最新数据""更新"时，必须使用 web_search 重新搜索获取最新数据
+- 对话历史中的数据可能已经过时（特别是股价、天气、新闻等实时数据），不要直接拿来回答
 - 当用户要求打开网站或链接时，使用 open_url 工具直接打开
 - 当用户要求浏览网页内容、操作网页时，使用 browser_navigate 等浏览器工具
 - 当用户要求执行命令、操作 git、运行代码时，使用 terminal 工具直接执行
@@ -733,7 +910,7 @@ ACTION_INPUT: <JSON 格式的工具参数>
 - 复杂问题先思考再决定是否需要工具
 - 如果搜索结果不足以回答问题，可以多次搜索不同关键词
 - 搜索时使用简洁的关键词，中英文均可
-- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${openUrlHint}${browserHint}${terminalHint}${fileOpsHint}`
+- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${fetchUrlHint}${openUrlHint}${browserHint}${terminalHint}${fileOpsHint}`
   }
 
   /** 构建 Think 步骤的 prompt */
@@ -766,8 +943,15 @@ ACTION_INPUT: <JSON 格式的工具参数>
    *
    * 当用户要求执行本地操作（git, 运行代码, 提交, 推送等）时，
    * LLM 不应该直接回答"我做不到"，而应该尝试使用 terminal/file_reader 等工具。
+   *
+   * 也检查对话历史上下文 — 当用户发送 follow-up 消息（如"给我准确的数据"）
+   * 且对话历史中包含实时数据相关话题时，也应触发工具使用。
    */
-  private shouldUseTool(userInput: string, availableTools: string[]): boolean {
+  private shouldUseTool(
+    userInput: string,
+    availableTools: string[],
+    historyMessages?: Array<{ role: string; content: string }>
+  ): boolean {
     if (availableTools.length === 0) return false
 
     const input = userInput.toLowerCase()
@@ -794,7 +978,12 @@ ACTION_INPUT: <JSON 格式的工具参数>
     // 搜索关键词（web_search）
     const searchKeywords = [
       '搜索', '查找', '最新', 'search', 'google', '百度',
-      '当前价格', '最新版本', '今天', '实时'
+      '当前价格', '最新版本', '今天', '实时',
+      // follow-up 请求中常见的需要重新搜索的关键词
+      '准确', '更新', '重新', '正确', '最新数据', '实时数据',
+      '现在', '当前', '目前', '刚刚', '-refresh', '刷新',
+      '不对', '错了', '错误', '不对啊', '不太对',  // 用户指出数据有误
+      '再搜', '重新搜', '再查', '重新查',  // 明确要求重新搜索
     ]
 
     const hasTerminal = availableTools.includes('terminal')
@@ -809,6 +998,42 @@ ACTION_INPUT: <JSON 格式的工具参数>
     // 检测路径模式（如 e:\, C:\, /home/ 等）
     if (hasTerminal || hasFileReader) {
       if (/[a-z]:\\/i.test(userInput) || /\/(home|usr|opt|var|tmp)\//.test(userInput)) return true
+    }
+
+    // ── 上下文感知：检查对话历史是否包含实时数据相关话题 ──
+    // 当用户发送 follow-up 消息（如"给我准确的数据"），且对话历史中
+    // 包含股价、天气、新闻等实时数据话题时，应该触发 web_search
+    if (hasWebSearch && historyMessages && historyMessages.length > 0) {
+      // 合并最近几条对话内容作为上下文
+      const recentContext = historyMessages
+        .slice(-6)  // 最近 6 条消息
+        .map(m => m.content)
+        .join(' ')
+        .toLowerCase()
+
+      // 实时数据话题关键词
+      const realtimeTopics = [
+        '股价', '大盘', '指数', '上证', '深证', '创业板', 'a股', '股票',
+        '行情', '涨跌', '收盘', '开盘', '盘中',
+        '天气', '气温', '温度',
+        '新闻', '今日', '今天',
+        '汇率', '油价', '金价',
+        '数据', '实时', '最新',
+      ]
+
+      // 用户输入中包含要求更新/准确/重新获取的意图
+      const updateIntentKeywords = [
+        '准确', '更新', '重新', '最新', '正确', '现在', '当前',
+        '不对', '错了', '再', '刷新', '实时',
+      ]
+
+      const hasRealtimeTopic = realtimeTopics.some(kw => recentContext.includes(kw))
+      const hasUpdateIntent = updateIntentKeywords.some(kw => input.includes(kw))
+
+      if (hasRealtimeTopic && hasUpdateIntent) {
+        console.log(`[AgentLoop] shouldUseTool: follow-up request with realtime context detected`)
+        return true
+      }
     }
 
     return false
