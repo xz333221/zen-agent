@@ -33,7 +33,7 @@ import type { SkillMatchResult } from '../skills/types'
 import type { AgentContext, AgentResult, AgentCallbacks, ReActStep } from './types'
 import type { TraceStep, ExecutionTrace, StepDetail, ThinkDetail, ObserveDetail, MemoryDetail, SkillMatchDetail } from '../../src/shared/types'
 
-const MAX_ITERATIONS = 15  // 最大循环次数
+const MAX_ITERATIONS = 50  // 最大循环次数（大模型上下文充足，放宽限制）
 
 // ── ReAct 解析正则 ──
 const THOUGHT_RE = /THOUGHT:\s*([\s\S]*?)(?=\nACTION:|$)/i
@@ -382,7 +382,7 @@ export class AgentLoop {
 
       // 检查是否完成
       if (parsed.action === 'FINAL_ANSWER' || parsed.action === 'DIRECT_ANSWER') {
-        // ── 纠偏机制 ──
+        // ── 纠偏机制 1：未使用工具就回答 ──
         // 如果第一轮 LLM 就想直接回答（没用过任何工具），但用户的问题明显需要本地操作，
         // 注入强提醒让 LLM 使用 terminal/file_reader 等工具，然后重试
         if (i === 0 && reactSteps.length === 0 && this.shouldUseTool(userInput, toolNames)) {
@@ -394,6 +394,36 @@ export class AgentLoop {
             action: 'FINAL_ANSWER',
             actionInput: {},
             observation: '[系统提醒] 你直接给出了最终答案，但你还没有尝试使用工具。你运行在用户的本地电脑上（不是远程服务器），你有 terminal 工具可以执行命令。请重新思考：用户想要什么操作？你应该用哪个工具？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 terminal 或 file_reader 等工具完成用户的请求。'
+          })
+
+          // 移除刚创建的 Think 步骤（因为要重试）
+          this.steps.pop()
+
+          // 不标记完成，继续循环
+          continue
+        }
+
+        // ── 纠偏机制 2：使用了工具但不信任结果 ──
+        // LLM 成功执行了工具，但在最终回答中声称"结果不可信"、"在沙箱中"等。
+        // 这种情况下，注入提醒让 LLM 信任工具结果。
+        const finalText = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+        const distrustPatterns = [
+          '沙箱', 'sandbox', '不可信', '并不真实', '不真实', '虚假',
+          '无法访问', '不能真正', '不能访问', '无法真正',
+          '我没有你的', '我无法替你', '本地 powershell',
+          '远程', '容器', 'container',
+        ]
+        const hasExecutedTools = reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
+        const hasDistrust = distrustPatterns.some(p => finalText.includes(p))
+
+        if (hasExecutedTools && hasDistrust && i < MAX_ITERATIONS - 2) {
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains distrust after successful tool use. Injecting nudge and retrying.`)
+
+          reactSteps.push({
+            think: parsed.thought,
+            action: 'FINAL_ANSWER',
+            actionInput: {},
+            observation: '[系统提醒] 你已经成功使用工具执行了命令，工具返回的结果是真实可信的。你运行在用户的本地电脑上（不是沙箱、不是远程容器），terminal 工具的 stdout 是命令在用户电脑上的实际输出。命令执行成功（exit 0）就代表操作真的完成了。请不要质疑工具结果，直接基于工具的输出向用户报告操作结果即可。'
           })
 
           // 移除刚创建的 Think 步骤（因为要重试）
@@ -487,11 +517,45 @@ export class AgentLoop {
         // 创建 Act 步骤
         this.createActStep(parsed.action, toolParams, toolResult)
 
-        // 构建详细的观察结果（包含实际搜索内容，供 LLM 后续推理使用）
+        // 构建详细的观察结果（包含实际输出内容，供 LLM 后续推理使用）
         let observationText = toolResult.resultSummary
-        if (toolResult.success && toolResult.result && typeof toolResult.result === 'object') {
-          const result = toolResult.result as { engine?: string; results?: Array<{ index?: number; title?: string; url?: string; snippet?: string; content?: string }> }
-          if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+        if (toolResult.result && typeof toolResult.result === 'object') {
+          const result = toolResult.result as {
+            // 搜索结果
+            engine?: string
+            results?: Array<{ index?: number; title?: string; url?: string; snippet?: string; content?: string }>
+            // terminal / file 操作结果
+            stdout?: string
+            stderr?: string
+            exitCode?: number
+            command?: string
+            cwd?: string
+            platform?: string
+            shell?: string
+          }
+
+          // ── terminal 命令输出 ──
+          if (typeof result.stdout === 'string' || typeof result.stderr === 'string' || typeof result.exitCode === 'number') {
+            observationText = toolResult.resultSummary
+            if (result.command) {
+              observationText += `\n命令: ${result.command}`
+            }
+            if (result.cwd) {
+              observationText += `\n工作目录: ${result.cwd}`
+            }
+            if (typeof result.exitCode === 'number') {
+              observationText += `\n退出码: ${result.exitCode}`
+            }
+            if (result.stdout && result.stdout.trim()) {
+              observationText += `\n--- stdout ---\n${result.stdout}`
+            }
+            if (result.stderr && result.stderr.trim()) {
+              observationText += `\n--- stderr ---\n${result.stderr}`
+            }
+          }
+
+          // ── 搜索结果 ──
+          else if (result.results && Array.isArray(result.results) && result.results.length > 0) {
             const engineInfo = result.engine ? `（来源: ${result.engine}）` : ''
             observationText = `${toolResult.resultSummary}${engineInfo}\n\n搜索结果详情：`
             for (const r of result.results) {
@@ -501,9 +565,7 @@ export class AgentLoop {
                 observationText += `  摘要: ${r.snippet}\n`
               }
               if (r.content) {
-                // 截取前 800 字符，避免上下文过长
-                const contentSnippet = r.content.length > 800 ? r.content.slice(0, 800) + '...' : r.content
-                observationText += `  内容: ${contentSnippet}\n`
+                observationText += `  内容: ${r.content}\n`
               }
             }
           }

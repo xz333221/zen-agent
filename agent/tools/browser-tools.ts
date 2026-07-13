@@ -88,12 +88,12 @@ export const browserNavigate: ToolExecutor = {
       await page.waitForNetworkIdle({ idleTime: 1500, timeout: 8000 }).catch(() => {})
 
       const title = await page.title()
-      const text = await browserManager.getPageText(2000)
+      const text = await browserManager.getPageText(0)  // 0 = 不截断
 
       return makeResult(
         true,
         `已导航到: ${url}\n页面标题: ${title}\n页面内容预览:\n${text}`,
-        { url, title, textPreview: text.slice(0, 500) },
+        { url, title, textPreview: text },
         'json',
         undefined,
         Date.now() - start
@@ -111,7 +111,7 @@ export const browserNavigate: ToolExecutor = {
 const GET_TEXT_DEF: ToolDef = {
   id: 'browser_get_text',
   name: 'BrowserGetText',
-  description: '获取当前浏览器页面的文本内容。参数: selector (可选，CSS 选择器，留空获取整页文本), maxLength (可选，最大返回字符数，默认 3000)',
+  description: '获取当前浏览器页面的文本内容。参数: selector (可选，CSS 选择器，留空获取整页文本), maxLength (可选，最大返回字符数，默认不限制)',
   category: 'builtin',
   schema: {
     type: 'object',
@@ -122,8 +122,8 @@ const GET_TEXT_DEF: ToolDef = {
       },
       maxLength: {
         type: 'number',
-        description: '最大返回字符数（默认 3000）',
-        default: 3000
+        description: '最大返回字符数（默认不限制，传 0 或负数表示不限制）',
+        default: 0
       }
     },
     required: []
@@ -142,7 +142,7 @@ export const browserGetText: ToolExecutor = {
     try {
       const page = await browserManager.getPage()
       const selector = String(params.selector || '').trim()
-      const maxLength = Number(params.maxLength) || 3000
+      const maxLength = Number(params.maxLength) || 0  // 0 = 不限制
 
       let text: string
       if (selector) {
@@ -155,7 +155,7 @@ export const browserGetText: ToolExecutor = {
         text = await page.evaluate(() => document.body.innerText)
       }
 
-      const truncated = text.length > maxLength
+      const truncated = maxLength > 0 && text.length > maxLength
       const result = truncated ? text.slice(0, maxLength) + '\n...(内容过长，已截断)' : text
 
       return makeResult(
@@ -404,13 +404,11 @@ export const browserEval: ToolExecutor = {
       const result = await page.evaluate(code)
 
       const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
-      const truncated = resultStr.length > 3000
-      const display = truncated ? resultStr.slice(0, 3000) + '\n...(结果过长，已截断)' : resultStr
 
       return makeResult(
         true,
-        `JavaScript 执行结果:\n${display}`,
-        { result: truncated ? resultStr.slice(0, 3000) : resultStr, truncated },
+        `JavaScript 执行结果:\n${resultStr}`,
+        { result: resultStr },
         'text',
         undefined,
         Date.now() - start

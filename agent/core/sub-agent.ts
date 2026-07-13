@@ -380,7 +380,7 @@ ${toolResult.success ? toolResult.resultSummary : '失败: ' + (toolResult.error
     for (const depId of task.dependencies) {
       const data = this.blackboard.data.get(depId)
       if (data) {
-        results.push(`[${depId} 的结果]: ${typeof data === 'string' ? data : JSON.stringify(data).slice(0, 500)}`)
+        results.push(`[${depId} 的结果]: ${typeof data === 'string' ? data : JSON.stringify(data)}`)
       }
     }
     return results

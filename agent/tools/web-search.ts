@@ -645,7 +645,7 @@ async function fetchUrlContent(url: string, signal?: AbortSignal): Promise<strin
       .replace(/\s+/g, ' ')
       .trim()
 
-    const contentSnippet = cleaned.slice(0, 1500)
+    const contentSnippet = cleaned
 
     const parts: string[] = []
     if (title) parts.push(`标题: ${title}`)

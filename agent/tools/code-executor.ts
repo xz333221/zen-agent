@@ -210,7 +210,7 @@ export const codeExecutor: ToolExecutor = {
         duration: result.duration
       },
       resultType: 'code',
-      resultSummary: `代码执行完成 (${result.duration}ms)${outputStr ? ` → ${outputStr.slice(0, 100)}` : ''}`,
+      resultSummary: `代码执行完成 (${result.duration}ms)${outputStr ? ` → ${outputStr}` : ''}`,
       duration: Date.now() - startTime
     }
   }

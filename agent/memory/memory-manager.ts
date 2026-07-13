@@ -86,7 +86,7 @@ export class MemoryManager {
       const safeInput = typeof userInput === 'string' ? userInput : String(userInput ?? '')
 
       // 生成用于检索的文本（用户意图 + 回复摘要）
-      const searchText = `${safeInput}\n${safeOutput.slice(0, 500)}`
+      const searchText = `${safeInput}\n${safeOutput}`
       const embedding = await generateEmbedding(searchText, options.signal)
 
       // 检查是否已有高度相似的记忆（去重）
@@ -103,7 +103,7 @@ export class MemoryManager {
         timestamp: Date.now(),
         userIntent: safeInput,
         actions,
-        outcome: safeOutput.slice(0, 2000),  // 限制存储长度
+        outcome: safeOutput,
         successScore,
         modelUsed: options.modelUsed || '',
         skillsUsed: options.skillsUsed || [],

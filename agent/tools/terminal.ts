@@ -48,8 +48,8 @@ const TERMINAL_DEF: ToolDef = {
   timeoutMs: 120000
 }
 
-// ── 最大输出长度（防止超大输出撑爆上下文）──
-const MAX_OUTPUT_LENGTH = 20000
+// ── 最大输出长度（大模型上下文充足，不截断）──
+const MAX_OUTPUT_LENGTH = 10 * 1024 * 1024 // 10MB — 仅防止极端情况下的内存溢出
 
 /**
  * 真正危险的命令模式 — 这些命令会被拦截
@@ -204,7 +204,7 @@ export const terminal: ToolExecutor = {
         {
           cwd: workDir,
           timeout: timeoutMs,
-          maxBuffer: 1024 * 1024 * 5, // 5MB
+          maxBuffer: 1024 * 1024 * 50, // 50MB — 大模型上下文充足，放宽限制
           env: { ...process.env },
           shell: process.platform === 'win32' ? process.env.COMSPEC || 'cmd.exe' : process.env.SHELL || '/bin/bash'
         },
@@ -258,8 +258,8 @@ export const terminal: ToolExecutor = {
               },
               resultType: 'text',
               resultSummary: isTimeout
-                ? `命令超时 (${timeoutMs}ms): ${command.slice(0, 80)}`
-                : `命令失败 (exit ${exitCode}): ${command.slice(0, 80)}${platformHint}`,
+                ? `命令超时 (${timeoutMs}ms): ${command}`
+                : `命令失败 (exit ${exitCode}): ${command}${platformHint}`,
               duration,
               error: isTimeout ? `Command timed out after ${timeoutMs}ms` : `Exit code ${exitCode}`
             })
@@ -267,8 +267,8 @@ export const terminal: ToolExecutor = {
             // 成功
             const exitCode = 0
             const summary = truncatedStdout
-              ? `命令执行成功 (exit ${exitCode}, ${duration}ms): ${command.slice(0, 60)}`
-              : `命令执行成功 (exit ${exitCode}, ${duration}ms, 无输出): ${command.slice(0, 60)}`
+              ? `命令执行成功 (exit ${exitCode}, ${duration}ms): ${command}`
+              : `命令执行成功 (exit ${exitCode}, ${duration}ms, 无输出): ${command}`
 
             resolvePromise({
               callId: `term-${Date.now()}`,

@@ -178,10 +178,10 @@ function summarizeWithRules(
 
   const points: string[] = []
 
-  // 首条消息完整保留（截取前 200 字符）
+  // 首条消息完整保留
   const first = dialogMessages[0]
-  const firstExcerpt = first.content.slice(0, 200)
-  points.push(`${first.role === 'user' ? '用户' : '小禅'}: ${firstExcerpt}${first.content.length > 200 ? '...' : ''}`)
+  const firstExcerpt = first.content
+  points.push(`${first.role === 'user' ? '用户' : '小禅'}: ${firstExcerpt}`)
 
   // 中间消息提取首句
   for (let i = 1; i < dialogMessages.length - 1; i++) {
@@ -193,11 +193,11 @@ function summarizeWithRules(
     }
   }
 
-  // 末条消息完整保留（截取前 200 字符）
+  // 末条消息完整保留
   if (dialogMessages.length > 1) {
     const last = dialogMessages[dialogMessages.length - 1]
-    const lastExcerpt = last.content.slice(0, 200)
-    points.push(`${last.role === 'user' ? '用户' : '小禅'}: ${lastExcerpt}${last.content.length > 200 ? '...' : ''}`)
+    const lastExcerpt = last.content
+    points.push(`${last.role === 'user' ? '用户' : '小禅'}: ${lastExcerpt}`)
   }
 
   const summary = `## 对话摘要（规则提取）\n${points.map(p => `- ${p}`).join('\n')}`

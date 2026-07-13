@@ -77,20 +77,20 @@ onMounted(async () => {
     }
   })
 
-  // 监听气泡
-  unlistenBubble = window.petAPI.onShowBubble((b) => {
-    bubble.value = b
-  })
-
-  // 首次启动问候
-  setTimeout(() => {
-    bubble.value = {
-      text: '你好！我是小禅，点击我开始对话吧。',
-      type: 'greeting',
-      actionLabel: '开始对话',
-      actionId: 'start-chat'
-    }
-  }, 800)
+  // ── 气泡功能暂时禁用（透明窗口区域会拦截桌面点击）──
+  // 如需恢复，取消下方注释即可
+  // unlistenBubble = window.petAPI.onShowBubble((b) => {
+  //   bubble.value = b
+  // })
+  //
+  // setTimeout(() => {
+  //   bubble.value = {
+  //     text: '你好！我是小禅，点击我开始对话吧。',
+  //     type: 'greeting',
+  //     actionLabel: '开始对话',
+  //     actionId: 'start-chat'
+  //   }
+  // }, 800)
 
   // 初始化主题
   try {
@@ -137,14 +137,15 @@ function onBubbleDismiss() {
     @mouseup="onMouseUp"
     @contextmenu="onContextMenu"
   >
-    <div class="pet-bubble-wrapper">
+    <!-- 气泡功能暂时禁用 -->
+    <!-- <div class="pet-bubble-wrapper">
       <SpeechBubble
         v-if="bubble"
         :bubble="bubble"
         @action="onBubbleAction"
         @dismiss="onBubbleDismiss"
       />
-    </div>
+    </div> -->
 
     <ZenOwl :state="petState" />
   </div>
@@ -161,11 +162,13 @@ function onBubbleDismiss() {
   overflow: visible;
 }
 
-.pet-bubble-wrapper {
+/* 气泡功能暂时禁用 */
+/* .pet-bubble-wrapper {
   position: absolute;
   bottom: 165px;
   right: 10px;
   z-index: 10;
   max-width: 320px;
-}
+  pointer-events: none;
+} */
 </style>

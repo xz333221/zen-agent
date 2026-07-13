@@ -11,21 +11,57 @@ import { startResourceMonitor, stopResourceMonitor } from './system-resource-mon
 import { PetState } from '@shared/types'
 
 // ── Windows 控制台编码修复 ──
-// 同步切换 CMD 代码页为 UTF-8 (65001)，解决中文显示乱码问题
-// 必须同步执行，否则后续 console.log 仍然使用旧代码页
+// Node.js 在启动时缓存控制台代码页，chcp 65001 无法改变已启动进程的输出编码。
+// 方案：monkey-patch console 方法，将非 GBK 兼容的 Unicode 符号替换为 ASCII 等价物。
+// 中文字符不受影响（GBK 支持中文），只有 emoji 和特殊符号会乱码。
 if (process.platform === 'win32') {
+  // 尝试切换代码页（可能在某些终端环境下生效）
   try {
     execSync('chcp 65001', { stdio: 'ignore' })
-    // 设置 stdout/stderr 为 UTF-8 编码
-    if (process.stdout && typeof (process.stdout as any).setDefaultEncoding === 'function') {
-      (process.stdout as any).setDefaultEncoding('utf-8')
-    }
-    if (process.stderr && typeof (process.stderr as any).setDefaultEncoding === 'function') {
-      (process.stderr as any).setDefaultEncoding('utf-8')
-    }
   } catch {
-    // 忽略错误：在某些环境（如 CI）中可能无法切换代码页
+    // 忽略
   }
+
+  // Unicode → ASCII 替换映射（仅替换 GBK 不支持的符号）
+  const UNICODE_TO_ASCII: Record<string, string> = {
+    '✓': 'OK', '✅': 'OK', '✔': 'OK',
+    '✗': 'FAIL', '❌': 'FAIL', '✖': 'FAIL',
+    '→': '->', '←': '<-', '↑': '^', '↓': 'v',
+    '━': '=', '─': '-', '│': '|', '┌': '+', '┐': '+', '└': '+', '┘': '+',
+    '·': '-', '—': '--', '–': '-',
+    '\u201c': '"', '\u201d': '"', '\u2018': "'", '\u2019': "'",
+    '…': '...',
+    '⚠': '!', '⚡': '!',
+    '🔍': '[search]', '✨': '[new]', '💡': '[tip]', '🔧': '[fix]', '🛠': '[tool]',
+    '📋': '[list]', '📦': '[pkg]', '🔑': '[key]', '🔒': '[lock]',
+    '✅': 'OK', '❎': 'OK',
+    '⏱': '[time]', '⏰': '[alarm]',
+    '📊': '[chart]', '📈': '[up]', '📉': '[down]',
+    '🎉': '[done]', '🚀': '[go]',
+  }
+
+  const sanitize = (text: string): string => {
+    let result = text
+    for (const [unicode, ascii] of Object.entries(UNICODE_TO_ASCII)) {
+      result = result.split(unicode).join(ascii)
+    }
+    // 移除其他非 GBK 兼容字符（保留中文、日文、韩文等 CJK 字符）
+    // CJK 统一汉字范围：U+4E00-U+9FFF，U+3400-U+4DBF
+    // 基本拉丁：U+0020-U+007E
+    // 常用标点：U+3000-U+303F（中文标点）
+    result = result.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]/gu, (m) => UNICODE_TO_ASCII[m] || '?')
+    return result
+  }
+
+  const origLog = console.log
+  const origError = console.error
+  const origWarn = console.warn
+  const origInfo = console.info
+
+  console.log = (...args: unknown[]) => origLog(...args.map(a => typeof a === 'string' ? sanitize(a) : a))
+  console.error = (...args: unknown[]) => origError(...args.map(a => typeof a === 'string' ? sanitize(a) : a))
+  console.warn = (...args: unknown[]) => origWarn(...args.map(a => typeof a === 'string' ? sanitize(a) : a))
+  console.info = (...args: unknown[]) => origInfo(...args.map(a => typeof a === 'string' ? sanitize(a) : a))
 }
 
 // ── 全局引用 ──

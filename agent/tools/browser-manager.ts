@@ -333,11 +333,11 @@ class BrowserManagerClass {
     }
   }
 
-  /** 获取页面文本内容（截取前 N 字符） */
-  async getPageText(maxLength: number = 3000): Promise<string> {
+  /** 获取页面文本内容（maxLength=0 表示不截断） */
+  async getPageText(maxLength: number = 0): Promise<string> {
     const page = await this.getPage()
     const text = await page.evaluate(() => document.body.innerText)
-    if (text.length > maxLength) {
+    if (maxLength > 0 && text.length > maxLength) {
       return text.slice(0, maxLength) + '\n...(内容过长，已截断)'
     }
     return text

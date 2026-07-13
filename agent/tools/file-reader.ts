@@ -14,7 +14,7 @@ import type { ToolDef, ToolExecutor, ToolResult } from './types'
 const FILE_READER_DEF: ToolDef = {
   id: 'file_reader',
   name: 'FileReader',
-  description: '读取本地文本文件内容。支持代码、配置文件、文本文件等。参数: path (文件路径), maxLines (最大行数, 可选)',
+  description: '读取本地文本文件内容。支持代码、配置文件、文本文件等。参数: path (文件路径), maxLines (最大行数, 可选, 默认不限制)',
   category: 'builtin',
   schema: {
     type: 'object',
@@ -25,8 +25,8 @@ const FILE_READER_DEF: ToolDef = {
       },
       maxLines: {
         type: 'number',
-        description: '最大读取行数（默认 500）',
-        default: 500
+        description: '最大读取行数（默认不限制，传 0 或负数表示不限制）',
+        default: 0
       },
       showLineNumbers: {
         type: 'boolean',
@@ -40,7 +40,7 @@ const FILE_READER_DEF: ToolDef = {
   timeoutMs: 10000
 }
 
-const MAX_FILE_SIZE = 1024 * 1024 // 1MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB — 大模型上下文充足，放宽限制
 
 // 支持的文件扩展名
 const SUPPORTED_EXTENSIONS = new Set([
@@ -56,7 +56,7 @@ export const fileReader: ToolExecutor = {
   async execute(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const startTime = Date.now()
     const filePath = String(params.path || '')
-    const maxLines = Number(params.maxLines) || 500
+    const maxLines = Number(params.maxLines) || 0  // 0 = 不限制
     const showLineNumbers = params.showLineNumbers !== false
 
     if (!filePath) {
@@ -94,7 +94,7 @@ export const fileReader: ToolExecutor = {
           success: false,
           result: null,
           resultType: 'error',
-          resultSummary: `文件过大: ${(stat.size / 1024).toFixed(1)}KB (最大 1MB)`,
+          resultSummary: `文件过大: ${(stat.size / 1024 / 1024).toFixed(1)}MB (最大 ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
           duration: Date.now() - startTime,
           error: `File too large: ${stat.size} bytes`
         }
@@ -128,10 +128,10 @@ export const fileReader: ToolExecutor = {
         }
       }
 
-      // 截断行数
+      // 行数限制（0 = 不限制）
       const lines = content.split('\n')
-      const truncated = lines.length > maxLines
-      const displayLines = lines.slice(0, maxLines)
+      const truncated = maxLines > 0 && lines.length > maxLines
+      const displayLines = maxLines > 0 ? lines.slice(0, maxLines) : lines
 
       // 添加行号
       let displayContent: string
@@ -144,7 +144,7 @@ export const fileReader: ToolExecutor = {
       }
 
       if (truncated) {
-        displayContent += `\n\n... (已截断，共 ${lines.length} 行，仅显示前 ${maxLines} 行)`
+        displayContent += `\n\n... (已截断，共 ${lines.length} 行，仅显示前 ${maxLines} 行。如需查看完整文件，设置 maxLines=0)`
       }
 
       return {
@@ -154,7 +154,7 @@ export const fileReader: ToolExecutor = {
           path: absPath,
           content: displayContent,
           totalLines: lines.length,
-          displayedLines: Math.min(lines.length, maxLines),
+          displayedLines: maxLines > 0 ? Math.min(lines.length, maxLines) : lines.length,
           truncated,
           size: stat.size
         },
