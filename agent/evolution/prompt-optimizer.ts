@@ -178,12 +178,15 @@ async function optimizeWithLLM(
 
   const systemPrompt = `你是一个 Prompt 优化专家。根据用户反馈，改进以下系统提示词。
 
-要求：
+严格要求：
 1. 保持核心角色设定不变（猫头鹰 AI 助手"小禅"）
 2. 针对反馈中的问题进行改进
 3. 保持简洁，不超过 500 字
 4. 保留 Markdown 格式
 5. 直接输出改进后的完整系统提示词，不要加额外说明
+6. 不要输出任何思考过程、推理、分析或元描述
+7. 不要输出 "Now I need to..." 等英文推理语句
+8. 输出必须以 "你是小禅" 开头，以中文内容为主
 
 当前系统提示词：
 ---
@@ -214,12 +217,19 @@ ${feedbackSummary || '（无具体反馈内容）'}`
     }
   }
 
+  // 验证并清洗 LLM 输出，防止推理文本污染系统提示词
+  const cleanedResponse = validateAndCleanPrompt(response, currentPrompt)
+  if (!cleanedResponse) {
+    console.warn('[PromptOptimizer] LLM output failed validation, falling back to rules')
+    return optimizeWithRules(currentPrompt)
+  }
+
   // 记录变更点
-  const changes = detectChanges(currentPrompt, response)
+  const changes = detectChanges(currentPrompt, cleanedResponse)
 
   // 创建新版本
   const oldVersion = getCurrentPrompt('system')
-  const newVersion = createPromptVersion(response.trim(), 'system', 3)
+  const newVersion = createPromptVersion(cleanedResponse, 'system', 3)
 
   console.log(`[PromptOptimizer] Created v${newVersion.version} via LLM optimization`)
 
@@ -302,6 +312,82 @@ function optimizeWithRules(currentPrompt: string): OptimizationResult {
     changes,
     reason: `基于 ${negativeFeedback.length} 条负反馈，使用规则优化`
   }
+}
+
+/**
+ * 验证并清洗 LLM 输出的系统提示词
+ * 防止推理文本、思考过程等污染系统提示词
+ *
+ * @returns 清洗后的合法提示词，如果验证失败返回 null
+ */
+function validateAndCleanPrompt(raw: string, originalPrompt: string): string | null {
+  let cleaned = raw.trim()
+
+  // 1. 如果输出包含 <think> 标签（未闭合的情况），移除标签及内容
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  // 移除未闭合的 <think> 标签后的所有内容
+  cleaned = cleaned.replace(/<think>[\s\S]*$/i, '').trim()
+
+  // 2. 检测并移除前导推理文本
+  //    推理文本通常以英文开头，直到出现 "你是小禅" 或类似的角色定义
+  const roleStartMatch = cleaned.match(/你是小禅/)
+  if (roleStartMatch && roleStartMatch.index !== undefined && roleStartMatch.index > 0) {
+    const beforeRole = cleaned.slice(0, roleStartMatch.index).trim()
+    // 如果 "你是小禅" 之前有大量非中文内容，认为是推理文本
+    const nonChineseRatio = (beforeRole.match(/[a-zA-Z]/g) || []).length / Math.max(beforeRole.length, 1)
+    if (beforeRole.length > 20 && nonChineseRatio > 0.5) {
+      console.warn('[PromptOptimizer] Detected reasoning text before role definition, stripping')
+      cleaned = cleaned.slice(roleStartMatch.index).trim()
+    }
+  }
+
+  // 3. 验证必须包含核心角色定义
+  if (!cleaned.includes('小禅') && !cleaned.includes('Zen')) {
+    console.warn('[PromptOptimizer] Output missing core role definition (小禅/Zen)')
+    return null
+  }
+
+  // 4. 验证长度合理（系统提示词应该在 100-2000 字之间）
+  if (cleaned.length < 50 || cleaned.length > 3000) {
+    console.warn(`[PromptOptimizer] Output length abnormal: ${cleaned.length}`)
+    return null
+  }
+
+  // 5. 检测英文推理文本占比过高
+  const englishLines = cleaned.split('\n').filter(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return false
+    const englishChars = (trimmed.match(/[a-zA-Z]/g) || []).length
+    return englishChars / trimmed.length > 0.7
+  })
+  // 原始提示词中的英文行数（运行环境等部分有英文）
+  const originalEnglishLines = originalPrompt.split('\n').filter(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return false
+    const englishChars = (trimmed.match(/[a-zA-Z]/g) || []).length
+    return englishChars / trimmed.length > 0.7
+  })
+  // 如果英文行数显著增加（超出原始 + 3 行容差），认为是推理文本
+  if (englishLines.length > originalEnglishLines.length + 3) {
+    console.warn(`[PromptOptimizer] Too many English lines: ${englishLines.length} vs original ${originalEnglishLines.length}`)
+    return null
+  }
+
+  // 6. 检测典型的推理语句模式
+  const reasoningPatterns = [
+    /^(now|i\s+(need|should|will|can|must)|let\s+me|based\s+on|first|to\s+generate|the\s+user)\b/i,
+    /^(step\s+\d|phase\s+\d|approach|strategy|analysis)/i,
+    /^(我需要|首先|接下来|然后|基于以上|根据反馈|分析反馈|策略|步骤)/
+  ]
+  const reasoningLineCount = cleaned.split('\n').filter(line =>
+    reasoningPatterns.some(p => p.test(line.trim()))
+  ).length
+  if (reasoningLineCount > 2) {
+    console.warn(`[PromptOptimizer] Detected ${reasoningLineCount} reasoning-like lines`)
+    return null
+  }
+
+  return cleaned
 }
 
 /**

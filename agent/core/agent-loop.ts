@@ -53,6 +53,12 @@ export class AgentLoop {
   private managedContext: ManagedContext | null = null
   private retrievedMemories: MemorySearchResult[] = []
   private matchedSkills: SkillMatchResult[] = []
+  // 纠偏机制重试计数器（防止无限循环）
+  private nudge1Count = 0  // 纠偏机制1：未使用工具就回答
+  private nudge15Count = 0  // 纠偏机制1.5：复用旧数据
+  private nudge2Count = 0  // 纠偏机制2：不信任工具结果
+  private nudge3Count = 0  // 纠偏机制3：搜索结果不足
+  private readonly NUDGE_MAX = 2  // 每个纠偏机制最多触发 2 次
 
   constructor(callbacks: AgentCallbacks = {}) {
     this.callbacks = callbacks
@@ -67,6 +73,10 @@ export class AgentLoop {
     this.totalOutputTokens = 0
     this.modelsUsed.clear()
     this.signal = context.signal
+    this.nudge1Count = 0
+    this.nudge15Count = 0
+    this.nudge2Count = 0
+    this.nudge3Count = 0
 
     console.log(`\n${'═'.repeat(60)}`)
     console.log(`[AgentLoop] START — input="${userInput.slice(0, 80)}${userInput.length > 80 ? '...' : ''}"`)
@@ -385,8 +395,9 @@ export class AgentLoop {
         // ── 纠偏机制 1：未使用工具就回答 ──
         // 如果第一轮 LLM 就想直接回答（没用过任何工具），但用户的问题明显需要本地操作，
         // 注入强提醒让 LLM 使用 terminal/file_reader 等工具，然后重试
-        if (i === 0 && reactSteps.length === 0 && this.shouldUseTool(userInput, toolNames, historyMessages)) {
-          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER without tools, but user input suggests tool use. Injecting nudge and retrying.`)
+        if (i === 0 && reactSteps.length === 0 && this.nudge1Count < this.NUDGE_MAX && this.shouldUseTool(userInput, toolNames, historyMessages)) {
+          this.nudge1Count++
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER without tools, but user input suggests tool use. Injecting nudge (${this.nudge1Count}/${this.NUDGE_MAX}) and retrying.`)
 
           // 不输出给用户，直接注入一个观察结果让 LLM 重新思考
           reactSteps.push({
@@ -410,7 +421,7 @@ export class AgentLoop {
         const finalText = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
         const hasExecutedTools = reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
         const hasNotUsedTools = reactSteps.length === 0 || !hasExecutedTools
-        if (hasNotUsedTools && i === 0 && i < MAX_ITERATIONS - 2) {
+        if (hasNotUsedTools && i === 0 && this.nudge15Count < this.NUDGE_MAX && i < MAX_ITERATIONS - 2) {
           const answerText = (parsed.actionInput || parsed.content || thinkResponse || '')
           const answerLower = answerText.toLowerCase()
 
@@ -444,7 +455,8 @@ export class AgentLoop {
           }
 
           if (hasSpecificData && hasRealtimeContext) {
-            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains specific data without tool use. Likely reusing stale conversation data. Injecting nudge.`)
+            this.nudge15Count++
+            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains specific data without tool use. Likely reusing stale conversation data. Injecting nudge (${this.nudge15Count}/${this.NUDGE_MAX}).`)
 
             reactSteps.push({
               think: parsed.thought,
@@ -478,12 +490,18 @@ export class AgentLoop {
           '沙箱', 'sandbox', '不可信', '并不真实', '不真实', '虚假',
           '无法访问', '不能真正', '不能访问', '无法真正',
           '我没有你的', '我无法替你', '本地 powershell',
-          '远程', '容器', 'container',
+          // 注意：'远程' 和 '容器' 单独匹配会误触发
+          // （如"远程仓库"是 git 术语），改用更具体的短语
+          '远程服务器', '远程容器', '远程环境', '远程机器',
+          '容器中', 'container环境', 'docker容器',
+          '不是真的', '不是真正', '并非真正', '模拟环境',
+          '测试环境', 'mock', '假的', '不是实际',
         ]
         const hasDistrust = distrustPatterns.some(p => finalText.includes(p))
 
-        if (hasExecutedTools && hasDistrust && i < MAX_ITERATIONS - 2) {
-          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains distrust after successful tool use. Injecting nudge and retrying.`)
+        if (hasExecutedTools && hasDistrust && this.nudge2Count < this.NUDGE_MAX && i < MAX_ITERATIONS - 2) {
+          this.nudge2Count++
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains distrust after successful tool use. Injecting nudge (${this.nudge2Count}/${this.NUDGE_MAX}) and retrying.`)
 
           reactSteps.push({
             think: parsed.thought,
@@ -516,10 +534,11 @@ export class AgentLoop {
         const hasSearchTool = toolNames.includes('web_search')
         const hasFetchTool = toolNames.includes('fetch_url')
 
-        if (hasExecutedTools && hasSearchNudge && hasSearchTool && i < MAX_ITERATIONS - 2) {
-          // 限制纠偏次数：最多纠偏 2 次（总共最多 3 次搜索）
+        if (hasExecutedTools && hasSearchNudge && hasSearchTool && this.nudge3Count < this.NUDGE_MAX && i < MAX_ITERATIONS - 2) {
+          // 限制纠偏次数：最多纠偏 NUDGE_MAX 次
           if (searchCount < 3) {
-            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains "data not found" patterns after search. Injecting nudge to search again or fetch URL.`)
+            this.nudge3Count++
+            console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains "data not found" patterns after search. Injecting nudge (${this.nudge3Count}/${this.NUDGE_MAX}) to search again or fetch URL.`)
 
             // 收集搜索结果中的 URL，供 LLM 参考
             const searchUrls: string[] = []

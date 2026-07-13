@@ -17,10 +17,33 @@ const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000
 const THINK_OPEN = '<' + 'think' + '>'
 const THINK_CLOSE = '<' + '/' + 'think' + '>'
 const THINK_TAG_RE = new RegExp(`${THINK_OPEN}[\\s\\S]*?${THINK_CLOSE}`, 'gi')
+// 未闭合的 <think> 标签（开标签但无闭标签，移除该标签及之后的所有内容）
+const THINK_UNCLOSED_RE = new RegExp(`${THINK_OPEN}[\\s\\S]*$`, 'i')
+// 孤立的 </think> 闭标签（API 已剥离开标签和推理内容，但残留了闭标签）
+const THINK_STRAY_CLOSE_RE = new RegExp('<' + '/' + 'think' + '>', 'gi')
+// 空标签 <>（API 解析 think 标签时产生的碎片）
+const EMPTY_TAG_RE = /<>/g
+
+/**
+ * 清洗 LLM 输出中的 think 标签碎片
+ * 处理顺序：完整配对 → 未闭合开标签 → 孤立闭标签 → 空标签碎片
+ */
+function cleanThinkTags(raw: string): string {
+  return raw
+    .replace(THINK_TAG_RE, '')      // <think>...</think> 完整配对
+    .replace(THINK_UNCLOSED_RE, '') // <think>... 未闭合开标签
+    .replace(THINK_STRAY_CLOSE_RE, '') // </think> 孤立闭标签
+    .replace(EMPTY_TAG_RE, '')      // <> 空标签碎片
+    .trim()
+}
+
+/** 需要检测的标签最大长度（</think> = 8 字符） */
+const MAX_TAG_LEN = Math.max(THINK_OPEN.length, THINK_CLOSE.length, 2)
 
 /**
  * 流式 <think> 标签过滤器
  * 处理跨 chunk 边界的标签碎片
+ * 同时过滤孤立的 </think> 闭标签和 <> 空标签碎片
  */
 class ThinkFilter {
   private buf = ''
@@ -33,24 +56,54 @@ class ThinkFilter {
 
     while (cursor.length > 0) {
       if (this.inside) {
+        // 在 think 标签内部，查找闭标签
         const end = cursor.indexOf(THINK_CLOSE)
         if (end !== -1) {
           this.inside = false
           cursor = cursor.slice(end + THINK_CLOSE.length)
         } else {
-          this.buf = cursor.slice(-Math.max(0, THINK_CLOSE.length - 1))
+          // 保留尾部以应对跨 chunk 的闭标签
+          this.buf = cursor.slice(-(THINK_CLOSE.length - 1))
           break
         }
       } else {
-        const start = cursor.indexOf(THINK_OPEN)
-        if (start !== -1) {
-          out += cursor.slice(0, start)
-          this.inside = true
-          cursor = cursor.slice(start + THINK_OPEN.length)
-        } else {
-          out += cursor.slice(0, -Math.max(0, THINK_OPEN.length - 1))
-          this.buf = cursor.slice(-Math.max(0, THINK_OPEN.length - 1))
+        // 不在 think 标签内部，查找所有需要过滤的模式
+        const thinkOpenIdx = cursor.indexOf(THINK_OPEN)
+        const thinkCloseIdx = cursor.indexOf(THINK_CLOSE)
+        const emptyTagIdx = cursor.indexOf('<>')
+
+        // 找到最早出现的模式
+        const candidates = [
+          { idx: thinkOpenIdx, len: THINK_OPEN.length, type: 'open' },
+          { idx: thinkCloseIdx, len: THINK_CLOSE.length, type: 'stray_close' },
+          { idx: emptyTagIdx, len: 2, type: 'empty' },
+        ].filter(c => c.idx !== -1)
+
+        if (candidates.length === 0) {
+          // 没有找到任何模式，输出大部分内容，保留尾部应对跨 chunk 碎片
+          if (cursor.length <= MAX_TAG_LEN - 1) {
+            this.buf = cursor
+            break
+          }
+          out += cursor.slice(0, -(MAX_TAG_LEN - 1))
+          this.buf = cursor.slice(-(MAX_TAG_LEN - 1))
           break
+        }
+
+        // 按位置排序，取最早出现的
+        candidates.sort((a, b) => a.idx - b.idx)
+        const earliest = candidates[0]
+
+        // 输出模式之前的内容
+        out += cursor.slice(0, earliest.idx)
+
+        if (earliest.type === 'open') {
+          // 进入 think 标签内部
+          this.inside = true
+          cursor = cursor.slice(earliest.idx + earliest.len)
+        } else {
+          // 孤立闭标签 </think> 或空标签 <>，直接跳过
+          cursor = cursor.slice(earliest.idx + earliest.len)
         }
       }
     }
@@ -58,7 +111,14 @@ class ThinkFilter {
   }
 
   flush(): string {
-    const out = this.inside ? '' : this.buf
+    // flush 时如果不在 think 内部，残留的 buffer 需要清洗后输出
+    let out = this.inside ? '' : this.buf
+    if (out) {
+      // 对残留内容也做一次标签清理
+      out = out
+        .replace(THINK_STRAY_CLOSE_RE, '')
+        .replace(EMPTY_TAG_RE, '')
+    }
     this.buf = ''
     this.inside = false
     return out
@@ -182,7 +242,8 @@ export class LLMProvider {
 
       const response = await client.chat.completions.create(params, { signal })
       const raw = response.choices[0]?.message?.content || ''
-      const result = raw.replace(THINK_TAG_RE, '').trim() || raw.trim()
+      // 清洗 think 标签碎片（完整配对、未闭合开标签、孤立闭标签、空标签）
+      const result = cleanThinkTags(raw) || raw.trim()
       const elapsed = Date.now() - startTime
       console.log(`[LLM] chat() ✓ ${elapsed}ms, response=${result.length}chars`)
       return result
@@ -244,7 +305,7 @@ export class LLMProvider {
       const final = filter.flush()
       if (final) callbacks.onChunk(final)
 
-      const result = fullRaw.replace(THINK_TAG_RE, '').trim() || fullRaw.trim()
+      const result = cleanThinkTags(fullRaw) || fullRaw.trim()
       const elapsed = Date.now() - startTime
       console.log(`[LLM] chatStream() ✓ ${elapsed}ms, chunks=${chunkCount}, response=${result.length}chars`)
       callbacks.onDone?.(result)

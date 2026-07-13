@@ -392,30 +392,60 @@ function registerChatHandlers(): void {
         .map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`)
         .join('\n')
 
-      const prompt = `基于以下用户最近的对话历史，生成 4 个用户可能想问的问题。要求：
-1. 问题要与用户兴趣相关，基于历史对话内容
-2. 问题要简洁明了，不超过 20 个字
-3. 每行一个问题，不要编号
-4. 只输出问题本身，不要其他内容
+      // 使用 system + user 双消息结构，明确角色边界
+      const systemPrompt = `你是一个问题生成助手。你的唯一任务是生成用户可能想问的问题。
+
+严格要求：
+1. 只输出问题本身，每行一个问题
+2. 不要输出任何思考过程、推理、说明、编号或前缀
+3. 不要输出 "Now I need to..." 或类似的中英文推理语句
+4. 问题必须是中文，简洁明了，不超过 20 个字
+5. 正好输出 4 个问题
+
+正确输出示例：
+帮我写一个 Python 脚本
+今天 A 股大盘走势如何
+推荐一本技术书籍
+如何优化 React 性能`
+
+      const userPrompt = `基于以下用户最近的对话历史，生成 4 个用户可能想问的问题。
 
 对话历史：
-${historyText}
-
-建议问题：`
+${historyText}`
 
       const config = getConfig()
       const modelKey = config.fastModel || config.defaultModel
       const response = await llm.chat({
-        messages: [{ role: 'user', content: prompt }],
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
         ...(modelKey ? { modelKey } : {}),
         temperature: 0.8,
         maxTokens: 300
       })
 
+      // 过滤推理文本，只保留真正的问题
       const suggestions = response
         .split('\n')
         .map((s: string) => s.trim())
-        .filter((s: string) => s.length > 0 && s.length <= 50)
+        .filter((s: string) => {
+          // 基本长度检查
+          if (s.length === 0 || s.length > 50) return false
+          // 过滤编号前缀（1. 2. 等）
+          if (/^\d+[.)]\s*/.test(s)) return false
+          // 过滤 bullet 符号开头
+          if (/^[*\-+]\s+/.test(s)) return false
+          // 过滤英文推理文本（以 "Now I", "I need", "Let me", "Based on" 等开头）
+          if (/^(now\s+i|i\s+(need|should|will|can)|let\s+me|based\s+on|first|next|then|so|i'll|i'll|i\s+will)\b/i.test(s)) return false
+          // 过滤包含 "questions" "generate" 等元描述的行
+          if (/\b(generate|question|requirement|constraint|instruction)\b/i.test(s)) return false
+          // 过滤纯英文行（除非很短像缩写）
+          if (/^[a-zA-Z\s,.!?;:'"\-()]+$/.test(s) && s.length > 10) return false
+          // 过滤 "建议问题：" 等标签行
+          if (/^(建议|推荐|生成|问题|输出)[：:]/.test(s)) return false
+          return true
+        })
         .slice(0, 4)
 
       return suggestions.length > 0 ? suggestions : getDefaultSuggestions()
