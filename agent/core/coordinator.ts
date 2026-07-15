@@ -106,16 +106,27 @@ export class Coordinator {
    */
   private async decomposeWithLLM(userRequest: string): Promise<ExecutionPlan> {
     const config = getConfig()
+
+    // 检测用户请求中是否包含本地路径
+    const hasLocalPath = /[A-Za-z]:\\|\/home\/|\/usr\/|\/var\/|\/opt\//.test(userRequest)
+    const localPathHint = hasLocalPath
+      ? `\n\n⚠️ 重要：用户请求中包含本地文件路径。这是一个本地项目/目录，不是网络搜索目标！
+- 探索项目结构时，agentType 应使用 "coder" 或 "researcher"，任务描述中应明确"使用 terminal 工具执行 dir/ls 命令查看目录结构"或"使用 file_reader 读取文件"
+- 启动项目时，任务描述应明确"使用 terminal 工具在指定路径下执行启动命令（如 npm run dev / python main.py 等）"
+- 不要将本地路径作为网络搜索关键词！`
+      : ''
+
     const prompt = `分析以下用户请求，将其分解为 ${this.options.maxTasks} 个以内的子任务。
 
 用户请求: "${userRequest}"
+${localPathHint}
 
 返回 JSON 格式（不要其他内容）:
 {
   "tasks": [
     {
       "name": "任务名称",
-      "description": "任务详细描述",
+      "description": "任务详细描述（必须包含具体操作步骤和工具名称）",
       "agentType": "coder|researcher|writer|analyst|general",
       "dependencies": ["依赖的任务名称（空数组表示无依赖）"],
       "canParallelize": true|false
@@ -125,10 +136,12 @@ export class Coordinator {
 
 规则:
 - 每个子任务应清晰明确，可独立执行
-- agentType: coder=编程, researcher=搜索研究, writer=写作, analyst=分析, general=通用
+- agentType: coder=编程/本地操作, researcher=搜索研究/文件探索, writer=写作, analyst=分析, general=通用
 - dependencies: 列出必须先完成的任务名称
 - canParallelize: 是否可以与其他无依赖关系的任务并行执行
 - 最多 ${this.options.maxTasks} 个子任务
+- 任务描述必须具体，包含要执行的操作和使用的工具（如 terminal、file_reader、web_search 等）
+${hasLocalPath ? '- 涉及本地路径的任务，描述中必须包含完整路径' : ''}
 
 只返回 JSON。`
 

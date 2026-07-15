@@ -55,8 +55,9 @@ export const fileReader: ToolExecutor = {
   def: FILE_READER_DEF,
   async execute(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const startTime = Date.now()
-    const filePath = String(params.path || '')
-    const maxLines = Number(params.maxLines) || 0  // 0 = 不限制
+    // 接受 path 或 file_path 作为参数名（LLM 可能使用任一名称）
+    const filePath = String(params.path || params.file_path || params.filePath || '')
+    const maxLines = Number(params.maxLines || params.limit || params.max_lines) || 0  // 0 = 不限制
     const showLineNumbers = params.showLineNumbers !== false
 
     if (!filePath) {

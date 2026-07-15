@@ -157,7 +157,11 @@ export class AgentLoop {
           this.signal
         )
 
-        if (coordResult.output) {
+        // 检测 Coordinator 是否所有子任务都失败了（返回的是错误消息而非真实结果）
+        const allTasksFailed = coordResult.plan && coordResult.plan.tasks.length > 0 &&
+          coordResult.plan.tasks.every(t => t.status === 'failed' || t.status === 'skipped')
+
+        if (coordResult.output && !allTasksFailed) {
           finalOutput = coordResult.output
           // 流式输出协调器结果
           const chunks = this.splitIntoChunks(finalOutput, 3)
@@ -167,7 +171,8 @@ export class AgentLoop {
           }
           llmCallCount = 1 // 至少一次 LLM 调用
         } else {
-          // 协调器未生成输出，回退到 ReAct
+          // 协调器未生成输出或所有子任务都失败，回退到 ReAct
+          console.log(`[AgentLoop] Coordinator ${allTasksFailed ? 'all tasks failed' : 'no output'}, falling back to ReAct`)
           if (isLLMConfigured()) {
             const result = await this.runReActLoop(userInput, context, reactSteps, intentResult.complexity)
             finalOutput = result.output
