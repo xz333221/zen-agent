@@ -30,7 +30,8 @@ export default defineConfig({
           settings: resolve(__dirname, 'src/preload/settings.ts'),
           skills: resolve(__dirname, 'src/preload/skills.ts'),
           memory: resolve(__dirname, 'src/preload/memory.ts'),
-          plugins: resolve(__dirname, 'src/preload/plugins.ts')
+          plugins: resolve(__dirname, 'src/preload/plugins.ts'),
+          evolution: resolve(__dirname, 'src/preload/evolution.ts')
         }
       }
     },
@@ -50,7 +51,8 @@ export default defineConfig({
           settings: resolve(__dirname, 'src/renderer/settings/index.html'),
           skills: resolve(__dirname, 'src/renderer/skills/index.html'),
           memory: resolve(__dirname, 'src/renderer/memory/index.html'),
-          plugins: resolve(__dirname, 'src/renderer/plugins/index.html')
+          plugins: resolve(__dirname, 'src/renderer/plugins/index.html'),
+          evolution: resolve(__dirname, 'src/renderer/evolution/index.html')
         }
       }
     },

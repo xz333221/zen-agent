@@ -1,5 +1,6 @@
 import { Tray, Menu, nativeImage, app } from 'electron'
 import { join } from 'path'
+import { existsSync, readFileSync } from 'fs'
 import { IPC_CHANNELS } from '@shared/types'
 import { getPetWindow, setPetState } from './windows/pet-window'
 import { showChatWindow, hideChatWindow, getChatWindow } from './windows/chat-window'
@@ -7,6 +8,7 @@ import { showSkillsWindow } from './windows/skills-window'
 import { showMemoryWindow } from './windows/memory-window'
 import { showPluginsWindow } from './windows/plugins-window'
 import { showSettingsWindow } from './windows/settings-window'
+import { showEvolutionWindow } from './windows/evolution-window'
 
 let tray: Tray | null = null
 
@@ -18,15 +20,88 @@ export function isPetSleeping(): boolean {
 }
 
 /**
+ * 创建托盘图标
+ *
+ * 优先使用 build/icon.png 或 build/icon.ico，
+ * 如果不存在，则生成一个品牌色的圆形图标（猫头鹰眼睛造型）。
+ */
+function createTrayIcon(): nativeImage {
+  // 尝试加载图标文件
+  const iconPathPng = join(app.getAppPath(), 'build', 'icon.png')
+  const iconPathIco = join(app.getAppPath(), 'build', 'icon.ico')
+  const iconPathResPng = join(process.resourcesPath || '', 'build', 'icon.png')
+
+  for (const p of [iconPathPng, iconPathIco, iconPathResPng]) {
+    if (existsSync(p)) {
+      try {
+        const img = nativeImage.createFromPath(p)
+        if (!img.isEmpty()) {
+          // 缩放到 16x16 用于托盘
+          return img.resize({ width: 16, height: 16 })
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  // 生成品牌色图标（16x16 RGBA）
+  // 品牌色: #5BAA8A (91, 170, 138)
+  const size = 16
+  const buffer = Buffer.alloc(size * size * 4)
+
+  // 品牌色 RGBA
+  const r = 91, g = 170, b = 138, a = 255
+  // 白色（眼睛）RGBA
+  const wr = 255, wg = 255, wb = 255
+
+  const center = 7.5  // 圆心
+  const radius = 7.5   // 半径
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4
+      const dx = x - center
+      const dy = y - center
+      const dist = Math.sqrt(dx * dx + dy * dy)
+
+      if (dist <= radius) {
+        // 在圆内 — 检查是否是眼睛
+        // 左眼 (5, 5) 右眼 (10, 5)
+        const leftEyeDx = x - 5, leftEyeDy = y - 5
+        const rightEyeDx = x - 10, rightEyeDy = y - 5
+        const leftEyeDist = Math.sqrt(leftEyeDx * leftEyeDx + leftEyeDy * leftEyeDy)
+        const rightEyeDist = Math.sqrt(rightEyeDx * rightEyeDx + rightEyeDy * rightEyeDy)
+
+        if (leftEyeDist <= 1.8 || rightEyeDist <= 1.8) {
+          // 眼睛白色
+          buffer[idx] = wr
+          buffer[idx + 1] = wg
+          buffer[idx + 2] = wb
+          buffer[idx + 3] = a
+        } else {
+          // 品牌色背景
+          buffer[idx] = r
+          buffer[idx + 1] = g
+          buffer[idx + 2] = b
+          buffer[idx + 3] = a
+        }
+      } else {
+        // 圆外 — 透明
+        buffer[idx] = 0
+        buffer[idx + 1] = 0
+        buffer[idx + 2] = 0
+        buffer[idx + 3] = 0
+      }
+    }
+  }
+
+  return nativeImage.createFromBuffer(buffer, { width: size, height: size })
+}
+
+/**
  * 创建系统托盘
  */
 export function createTray(): Tray {
-  // 创建一个简单的托盘图标（16x16 透明图标）
-  const icon = nativeImage.createEmpty()
-  // 临时方案：使用一个 1x1 像素的透明图标
-  const size = 16
-  const buffer = Buffer.alloc(size * size * 4, 0)
-  const trayIcon = nativeImage.createFromBuffer(buffer, { width: size, height: size })
+  const trayIcon = createTrayIcon()
 
   tray = new Tray(trayIcon)
   tray.setToolTip('Zen Agent — 智慧小猫头鹰')
@@ -87,12 +162,17 @@ export function updateTrayMenu(): void {
         showChatWindow()
         const chatWin = getChatWindow()
         if (chatWin) {
-          // 通过 IPC 通知渲染进程新建会话
           chatWin.webContents.send(IPC_CHANNELS.CHAT_NEW_SESSION_NOTIFY)
         }
       }
     },
     { type: 'separator' },
+    {
+      label: '自进化',
+      click: () => {
+        showEvolutionWindow()
+      }
+    },
     {
       label: '技能管理',
       click: () => {
@@ -123,10 +203,8 @@ export function updateTrayMenu(): void {
       click: () => {
         const petWin = getPetWindow()
         if (isSleeping) {
-          // 唤醒
           isSleeping = false
           setPetState('idle')
-          // 显示问候气泡
           if (petWin) {
             petWin.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
               text: '我醒啦！有什么可以帮你的吗？',
@@ -134,10 +212,8 @@ export function updateTrayMenu(): void {
             })
           }
         } else {
-          // 休眠
           isSleeping = true
           setPetState('sleeping')
-          // 隐藏对话窗口
           hideChatWindow()
           if (petWin) {
             petWin.webContents.send(IPC_CHANNELS.PET_SHOW_BUBBLE, {
@@ -146,7 +222,6 @@ export function updateTrayMenu(): void {
             })
           }
         }
-        // 更新菜单显示
         updateTrayMenu()
       }
     },

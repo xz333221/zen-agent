@@ -25,7 +25,18 @@ import {
   recordImplicitFeedback,
   shouldOptimizePrompt
 } from '@agent/evolution/feedback-collector'
-import { registerBuiltinTools } from '@agent/tools/tool-registry'
+import {
+  initOrchestrator,
+  getOrchestrator
+} from '@agent/self-evolution/orchestrator'
+import {
+  getRecentEvolutionRecords,
+  getEvolutionRecord,
+  getEvolutionStats
+} from '@agent/self-evolution/evolution-journal'
+import { DEFAULT_EVOLUTION_CONFIG } from '@agent/self-evolution/types'
+import type { SelfEvolutionConfig } from '@agent/self-evolution/types'
+import { registerBuiltinTools, initFileIndex } from '@agent/tools/tool-registry'
 import { getToolDefs, executeAction } from '@agent/core/action-executor'
 import type { ToolDef } from '@agent/tools/types'
 import {
@@ -73,8 +84,11 @@ export async function registerIpcHandlers(): Promise<void> {
   initFeedbackCollector()
   initPromptOptimizer()
 
-  // 注册内置工具（T-012）
-  registerBuiltinTools()
+// 注册内置工具（T-012）
+registerBuiltinTools()
+
+// 初始化文件索引（后台异步扫描，不阻塞启动）
+initFileIndex()
 
   registerChatHandlers()
   registerPetHandlers()
@@ -88,6 +102,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerOllamaHandlers()
   registerMCPHandlers()
   registerDataPathHandlers()
+  registerEvolutionHandlers()
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -133,9 +148,12 @@ function registerChatHandlers(): void {
     // 更新消息计数
     incrementMessageCount(sid)
 
-    // ── 通过 AgentLoop 执行（ReAct 循环 + 追踪步骤） ──
-    // AgentLoop 内部会检测 LLM 是否配置，未配置时使用 mock 响应
-    currentAbortController = new AbortController()
+  // ── 通过 AgentLoop 执行（ReAct 循环 + 追踪步骤） ──
+  // AgentLoop 内部会检测 LLM 是否配置，未配置时使用 mock 响应
+  currentAbortController = new AbortController()
+
+  // 通知自进化编排器：用户有活动（重置空闲计时器）
+  getOrchestrator()?.notifyActivity()
 
     let fullResponse = ''
 
@@ -428,27 +446,38 @@ ${historyText}`
       // 过滤推理文本，只保留真正的问题
       const suggestions = response
         .split('\n')
-        .map((s: string) => s.trim())
+        .map((s: string) => {
+          // 剥离编号前缀（1. 2. 3) 等），保留后面的内容
+          let cleaned = s.trim().replace(/^\d+[.)]\s*/, '')
+          // 剥离 bullet 符号
+          cleaned = cleaned.replace(/^[*\-+]\s+/, '')
+          // 剥离引号
+          cleaned = cleaned.replace(/^["'""'']+|["'""''']+$/g, '')
+          return cleaned.trim()
+        })
         .filter((s: string) => {
           // 基本长度检查
           if (s.length === 0 || s.length > 50) return false
-          // 过滤编号前缀（1. 2. 等）
-          if (/^\d+[.)]\s*/.test(s)) return false
-          // 过滤 bullet 符号开头
-          if (/^[*\-+]\s+/.test(s)) return false
+          // 过滤 HTML/XML 标签格式的行（如 <answer>, </output> 等）
+          if (/^<\/?[a-zA-Z]/.test(s)) return false
+          // 过滤纯数字行
+          if (/^\d+$/.test(s)) return false
           // 过滤英文推理文本（以 "Now I", "I need", "Let me", "Based on" 等开头）
           if (/^(now\s+i|i\s+(need|should|will|can)|let\s+me|based\s+on|first|next|then|so|i'll|i'll|i\s+will)\b/i.test(s)) return false
           // 过滤包含 "questions" "generate" 等元描述的行
           if (/\b(generate|question|requirement|constraint|instruction)\b/i.test(s)) return false
           // 过滤纯英文行（除非很短像缩写）
           if (/^[a-zA-Z\s,.!?;:'"\-()]+$/.test(s) && s.length > 10) return false
+          // 过滤包含 < > 的行（可能是 XML 标签残留）
+          if (/[<>]/.test(s) && !/<=|>=/.test(s)) return false
           // 过滤 "建议问题：" 等标签行
           if (/^(建议|推荐|生成|问题|输出)[：:]/.test(s)) return false
           return true
         })
         .slice(0, 4)
 
-      return suggestions.length > 0 ? suggestions : getDefaultSuggestions()
+      // 如果过滤后有效建议不足 2 条，回退到默认建议
+      return suggestions.length >= 2 ? suggestions : getDefaultSuggestions()
     } catch (err) {
       console.error('[IPC] Failed to generate suggestions:', err)
       return getDefaultSuggestions()
@@ -1299,6 +1328,118 @@ function registerDataPathHandlers(): void {
       console.error('[IPC] Failed to detect browser user data dir:', e)
       return { success: false, error: String(e) }
     }
+  })
+}
+
+/** 默认进化配置（用于初始化） */
+const DEFAULT_EVOLUTION_SETTINGS = {
+  ...DEFAULT_EVOLUTION_CONFIG,
+  enabled: false
+}
+
+// ═══════════════════════════════════════════════════════════
+//  自进化相关 IPC
+// ═══════════════════════════════════════════════════════════
+
+function registerEvolutionHandlers(): void {
+  // 初始化自进化编排器
+  const orch = initOrchestrator(
+    { enabled: false },
+    {
+      onPhaseChange: (phase, message) => {
+        console.log(`[Evolution IPC] Phase: ${phase} - ${message}`)
+        // 通知宠物窗口
+        const petWin = getPetWindow()
+        if (petWin) {
+          petWin.webContents.send(IPC_CHANNELS.PET_STATE_CHANGE, {
+            state: phase === 'idle' ? 'idle' : 'evolving',
+            bubble: phase !== 'idle' && phase !== 'done' ? {
+              text: `自进化中: ${message}`,
+              type: 'evolution' as const
+            } : undefined
+          })
+        }
+      },
+      onComplete: (record) => {
+        console.log(`[Evolution IPC] Complete: ${record.outcome}`)
+        // 通知宠物窗口
+        const petWin = getPetWindow()
+        if (petWin) {
+          const bubbleText = record.outcome === 'success'
+            ? `自进化成功! ${record.goal.slice(0, 30)}`
+            : record.outcome === 'partial'
+              ? `自进化部分完成: ${record.goal.slice(0, 30)}`
+              : `自进化已回滚: ${(record.failureReason || '').slice(0, 30)}`
+          petWin.webContents.send(IPC_CHANNELS.PET_STATE_CHANGE, {
+            state: record.outcome === 'success' ? 'happy' : 'idle',
+            bubble: {
+              text: bubbleText,
+              type: 'evolution' as const
+            }
+          })
+        }
+      },
+      onError: (error) => {
+        console.error('[Evolution IPC] Error:', error)
+      }
+    }
+  )
+
+  // 获取自进化状态
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_STATUS, () => {
+    return orch.getStatus()
+  })
+
+  // 启用/禁用自进化
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_SET_ENABLED, (_event, enabled: boolean) => {
+    orch.updateConfig({ enabled })
+    if (enabled) {
+      orch.start()
+    } else {
+      orch.stop()
+    }
+    return { success: true, enabled }
+  })
+
+  // 手动触发一次进化
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_RUN_ONCE, async () => {
+    try {
+      const record = await orch.runOnce()
+      return { success: true, record }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // 获取进化记录列表
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_RECORDS, (_event, limit: number = 20) => {
+    return getRecentEvolutionRecords(limit)
+  })
+
+  // 获取单条进化记录
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_RECORD, (_event, id: string) => {
+    return getEvolutionRecord(id)
+  })
+
+  // 获取进化统计
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_STATS, () => {
+    return getEvolutionStats()
+  })
+
+  // 获取进化配置
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_CONFIG, () => {
+    return DEFAULT_EVOLUTION_SETTINGS
+  })
+
+  // 更新进化配置
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_SET_CONFIG, (_event, config: Partial<SelfEvolutionConfig>) => {
+    orch.updateConfig(config)
+    return { success: true }
+  })
+
+  // 获取 Token 预算
+  ipcMain.handle(IPC_CHANNELS.EVOLUTION_GET_TOKEN_BUDGET, () => {
+    return orch.getStatus().tokenBudget
   })
 }
 

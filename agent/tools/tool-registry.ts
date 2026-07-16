@@ -15,6 +15,8 @@ import { fetchUrl } from './fetch-url'
 import { openUrl } from './open-url'
 import { browserTools } from './browser-tools'
 import { terminal } from './terminal'
+import { fileSearch } from './file-search'
+import { fileIndexer } from './file-index'
 import type { ToolDef, ToolExecutor } from './types'
 
 // ── 所有内置工具列表 ──
@@ -27,6 +29,7 @@ const builtinTools: ToolExecutor[] = [
   fetchUrl,
   openUrl,
   terminal,
+  fileSearch,
   ...browserTools
 ]
 
@@ -46,6 +49,28 @@ export function registerBuiltinTools(): void {
 
   registered = true
   console.log(`[ToolRegistry] Registered ${builtinTools.length} builtin tools: ${builtinTools.map(t => t.def.id).join(', ')}`)
+}
+
+/**
+ * 初始化文件索引（异步，不阻塞启动）
+ * 在应用启动后调用，后台扫描常用目录
+ */
+export function initFileIndex(): void {
+  // 延迟 5 秒后开始构建，避免影响启动性能
+  setTimeout(() => {
+    fileIndexer.buildIndex().catch(err => {
+      console.error('[ToolRegistry] File index build failed:', err)
+    })
+  }, 5000)
+
+  // 每小时刷新一次
+  setInterval(() => {
+    if (fileIndexer.isStale()) {
+      fileIndexer.refresh().catch(err => {
+        console.error('[ToolRegistry] File index refresh failed:', err)
+      })
+    }
+  }, 60 * 60 * 1000).unref?.()
 }
 
 /**

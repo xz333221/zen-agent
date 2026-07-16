@@ -262,6 +262,50 @@ function runMigrations(database: Database): void {
     CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback(feedback_type)
   `)
 
+  // ── 自进化记录表 ──
+  database.run(`
+    CREATE TABLE IF NOT EXISTS evolution_records (
+      id TEXT PRIMARY KEY,
+      trigger_reason TEXT NOT NULL,
+      goal TEXT NOT NULL DEFAULT '',
+      files_changed TEXT NOT NULL DEFAULT '[]',
+      plan_json TEXT,
+      test_result_json TEXT,
+      evaluation_json TEXT,
+      outcome TEXT NOT NULL DEFAULT 'failure',
+      commit_hash TEXT,
+      failure_reason TEXT,
+      tokens_input INTEGER NOT NULL DEFAULT 0,
+      tokens_output INTEGER NOT NULL DEFAULT 0,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      logs_json TEXT NOT NULL DEFAULT '[]'
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_evolution_outcome ON evolution_records(outcome)
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_evolution_started ON evolution_records(started_at DESC)
+  `)
+
+  // ── Token 使用记录表 ──
+  database.run(`
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id TEXT PRIMARY KEY,
+      timestamp INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'chat'
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(timestamp DESC)
+  `)
+
   scheduleSave()
 }
 

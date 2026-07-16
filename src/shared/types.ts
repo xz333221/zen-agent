@@ -469,7 +469,19 @@ export const IPC_CHANNELS = {
   BROWSER_GET_CONFIG: 'browser:get-config',
   BROWSER_SET_CONFIG: 'browser:set-config',
   BROWSER_SELECT_DIR: 'browser:select-dir',
-  BROWSER_DETECT_USER_DATA_DIR: 'browser:detect-user-data-dir'
+  BROWSER_DETECT_USER_DATA_DIR: 'browser:detect-user-data-dir',
+
+  // Self-Evolution (T-025)
+  EVOLUTION_GET_STATUS: 'evolution:get-status',
+  EVOLUTION_SET_ENABLED: 'evolution:set-enabled',
+  EVOLUTION_RUN_ONCE: 'evolution:run-once',
+  EVOLUTION_GET_RECORDS: 'evolution:get-records',
+  EVOLUTION_GET_RECORD: 'evolution:get-record',
+  EVOLUTION_GET_STATS: 'evolution:get-stats',
+  EVOLUTION_GET_CONFIG: 'evolution:get-config',
+  EVOLUTION_SET_CONFIG: 'evolution:set-config',
+  EVOLUTION_GET_TOKEN_BUDGET: 'evolution:get-token-budget',
+  EVOLUTION_PHASE_CHANGE: 'evolution:phase-change'
 } as const
 
 // ═══════════════════════════════════════════════════════════

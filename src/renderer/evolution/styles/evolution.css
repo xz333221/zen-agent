@@ -1,0 +1,347 @@
+/* ═══ 全局重置 ═══ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  color: #333;
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ═══ 根容器 ═══ */
+.evo-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%);
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.evo-root.dark {
+  background: linear-gradient(180deg, #1a1b2e 0%, #16171e 100%);
+  color: #e0e0e0;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+/* ═══ 标题栏 ═══ */
+.title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.dark .title-bar {
+  background: rgba(30, 31, 46, 0.8);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+.title-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.title-owl { font-size: 18px; }
+
+.title-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #555;
+}
+
+.dark .title-text { color: #ccc; }
+
+.title-right {
+  display: flex;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+/* ═══ 按钮 ═══ */
+.btn-icon {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  color: #999;
+  padding: 2px 8px;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.btn-icon:hover { background: rgba(0, 0, 0, 0.06); color: #555; }
+
+.btn-primary {
+  border: none;
+  background: linear-gradient(135deg, #5BAA8A 0%, #4A9A7A 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-primary:hover { filter: brightness(1.08); box-shadow: 0 2px 8px rgba(91, 170, 138, 0.3); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-secondary {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.6);
+  color: #666;
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-secondary:hover { background: rgba(0, 0, 0, 0.04); }
+
+.btn-sm {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* ═══ 内容区 ═══ */
+.evo-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ═══ 卡片 ═══ */
+.card {
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  padding: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.dark .card {
+  background: rgba(30, 31, 46, 0.9);
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.card-icon { font-size: 16px; }
+.card-title { font-size: 13px; font-weight: 600; color: #666; flex: 1; }
+.dark .card-title { color: #aaa; }
+
+/* ═══ 状态网格 ═══ */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.status-label {
+  font-size: 11px;
+  color: #999;
+}
+
+.dark .status-label { color: #777; }
+
+.status-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+}
+
+.dark .status-value { color: #ddd; }
+
+/* ═══ 阶段徽章 ═══ */
+.phase-badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.phase-idle { background: #e8e8e8; color: #888; }
+.phase-analyzing { background: #e3f2fd; color: #1976d2; }
+.phase-planning { background: #f3e5f5; color: #7b1fa2; }
+.phase-modifying { background: #fff3e0; color: #e65100; }
+.phase-building { background: #e8f5e9; color: #2e7d32; }
+.phase-testing { background: #e8f5e9; color: #2e7d32; }
+.phase-evaluating { background: #fce4ec; color: #c2185b; }
+.phase-committing { background: #e0f7fa; color: #00838f; }
+.phase-done { background: #f1f8e9; color: #558b2f; }
+
+.badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; }
+.badge-running { background: #fff3e0; color: #e65100; }
+
+/* ═══ Token 预算 ═══ */
+.budget-info { display: flex; flex-direction: column; gap: 6px; }
+
+.budget-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.budget-label { font-size: 12px; color: #888; }
+.budget-value { font-size: 13px; font-weight: 500; color: #444; }
+.budget-value.highlight { color: #4A9A7A; font-weight: 700; }
+
+.budget-bar {
+  height: 6px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.budget-bar-used {
+  height: 100%;
+  background: linear-gradient(90deg, #5BAA8A, #4A9A7A);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+/* ═══ 统计 ═══ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.stat-box {
+  text-align: center;
+  padding: 10px 4px;
+  border-radius: 10px;
+  background: #f5f5f5;
+}
+
+.stat-box .stat-num { font-size: 22px; font-weight: 700; color: #555; }
+.stat-box .stat-label { font-size: 11px; color: #999; margin-top: 2px; }
+
+.stat-success { background: #e8f5e9; }
+.stat-success .stat-num { color: #2e7d32; }
+.stat-fail { background: #ffebee; }
+.stat-fail .stat-num { color: #c62828; }
+.stat-rollback { background: #fff3e0; }
+.stat-rollback .stat-num { color: #e65100; }
+
+/* ═══ 操作 ═══ */
+.action-buttons { display: flex; gap: 8px; }
+
+/* ═══ 历史列表 ═══ */
+.history-list { display: flex; flex-direction: column; gap: 6px; }
+
+.history-item {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f9f9f9;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.history-item:hover { background: #f0f0f0; transform: translateX(2px); }
+
+.dark .history-item { background: rgba(255, 255, 255, 0.04); }
+.dark .history-item:hover { background: rgba(255, 255, 255, 0.08); }
+
+.outcome-success { border-left: 3px solid #4caf50; }
+.outcome-failure { border-left: 3px solid #f44336; }
+.outcome-rolled_back { border-left: 3px solid #ff9800; }
+.outcome-partial { border-left: 3px solid #2196f3; }
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.badge-success { background: #e8f5e9; color: #2e7d32; }
+.badge-failure { background: #ffebee; color: #c62828; }
+.badge-rolled_back { background: #fff3e0; color: #e65100; }
+.badge-partial { background: #e3f2fd; color: #1565c0; }
+
+.history-time { font-size: 11px; color: #aaa; }
+.history-goal { font-size: 12px; color: #555; margin-bottom: 2px; }
+.history-meta { font-size: 11px; color: #999; }
+
+.empty-state {
+  text-align: center;
+  padding: 20px;
+  color: #ccc;
+  font-size: 13px;
+}
+
+/* ═══ 详情 ═══ */
+.detail-body { display: flex; flex-direction: column; gap: 8px; }
+
+.detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.detail-label { min-width: 70px; color: #999; }
+.detail-value { color: #444; flex: 1; }
+
+.detail-logs { margin-top: 4px; }
+
+.log-entries {
+  max-height: 240px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #f5f5f5;
+  padding: 6px;
+  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.dark .log-entries { background: rgba(0, 0, 0, 0.2); }
+
+.log-entry { display: flex; gap: 4px; }
+
+.log-time { color: #aaa; white-space: nowrap; }
+.log-phase { color: #1976d2; white-space: nowrap; }
+.log-msg { color: #555; }
+
+/* ═══ 暗色模式 ═══ */
+.dark .budget-label { color: #777; }
+.dark .budget-value { color: #ccc; }
+.dark .stat-box { background: rgba(255, 255, 255, 0.04); }
+.dark .stat-box .stat-num { color: #ddd; }
+.dark .stat-box .stat-label { color: #888; }
+.dark .stat-success { background: rgba(76, 175, 80, 0.12); }
+.dark .stat-fail { background: rgba(244, 67, 54, 0.12); }
+.dark .stat-rollback { background: rgba(255, 152, 0, 0.12); }
+.dark .detail-label { color: #777; }
+.dark .detail-value { color: #ccc; }
+.dark .log-msg { color: #aaa; }

@@ -896,6 +896,20 @@ export class AgentLoop {
 ${hasFileReader ? '- file_reader: 读取文件内容（如 {"path": "e:\\project\\package.json"}）\n' : ''}${hasFileWriter ? '- file_writer: 写入文件（如 {"path": "e:\\project\\test.txt", "content": "内容", "mode": "write"}）\n  - mode: "write" 覆盖写入（默认）, "append" 追加\n  - 自动创建父目录\n' : ''}典型工作流：file_reader 读取 → 分析/修改 → file_writer 写入`
       : ''
 
+    const hasFileSearch = toolNames.includes('file_search')
+    const fileSearchHint = hasFileSearch
+      ? `\n\n🔍 文件搜索工具 — 快速搜索本地文件和项目（基于预构建索引，秒级响应）：
+当用户要求查找文件、项目、代码仓库时，优先使用 file_search 工具，不要用 terminal 的 dir/ls 扫描！
+
+使用方法：
+- 搜索项目: {"query": "zen-agent"} → 返回匹配的项目路径和 Git 远程地址
+- 搜索文件: {"query": "package.json", "type": "file"}
+- 列出所有项目: {"query": "", "type": "project"}
+- 搜索类型: file（文件）/ directory（目录）/ project（项目）/ all（全部，默认）
+
+⚠️ 重要：当用户说"找一下 xxx 项目"或"电脑上有没有 xxx"时，用 file_search 搜索，不要用 terminal 扫磁盘！`
+      : ''
+
     return `${basePrompt}
 
 你是一个 ReAct Agent，使用 Think-Act-Observe 模式处理问题。
@@ -929,12 +943,13 @@ ACTION_INPUT: <JSON 格式的工具参数>
 - 当用户要求执行命令、操作 git、运行代码时，使用 terminal 工具直接执行
 - 当用户要求查看文件内容时，使用 file_reader 工具读取
 - 当用户要求写入或修改文件时，使用 file_writer 工具写入
+- 当用户要求查找文件、项目、代码仓库时，使用 file_search 工具搜索（秒级响应），不要用 terminal 扫描磁盘
 - 执行多步操作时（如 git commit + push），每步单独调用工具，不要合并
 - 简单的常识问题或计算问题直接用 FINAL_ANSWER 回答
 - 复杂问题先思考再决定是否需要工具
 - 如果搜索结果不足以回答问题，可以多次搜索不同关键词
 - 搜索时使用简洁的关键词，中英文均可
-- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${fetchUrlHint}${openUrlHint}${browserHint}${terminalHint}${fileOpsHint}`
+- 回答要简洁、准确、有帮助${toolsSection}${webSearchHint}${fetchUrlHint}${openUrlHint}${browserHint}${terminalHint}${fileOpsHint}${fileSearchHint}`
   }
 
   /** 构建 Think 步骤的 prompt */
@@ -999,6 +1014,15 @@ ACTION_INPUT: <JSON 格式的工具参数>
       '代码', '源码', '看看这个文件'
     ]
 
+    // 文件搜索关键词（file_search）
+    const fileSearchKeywords = [
+      '找', '查找文件', '查找项目', '搜索文件', '搜索项目', '找一下', '找一下',
+      '有没有', '在哪个', '在哪个目录', '项目在哪', '仓库在哪',
+      'find file', 'find project', 'search file', 'locate',
+      'zen-agent', 'z-mind', '拉取代码', '拉代码', 'clone',
+      '电脑上', '本机', '本地项目', '所有项目', '列出项目'
+    ]
+
     // 搜索关键词（web_search）
     const searchKeywords = [
       '搜索', '查找', '最新', 'search', 'google', '百度',
@@ -1014,10 +1038,12 @@ ACTION_INPUT: <JSON 格式的工具参数>
     const hasFileReader = availableTools.includes('file_reader')
     const hasFileWriter = availableTools.includes('file_writer')
     const hasWebSearch = availableTools.includes('web_search')
+    const hasFileSearchTool = availableTools.includes('file_search')
 
     if (hasTerminal && terminalKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
     if ((hasFileReader || hasFileWriter) && fileKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
     if (hasWebSearch && searchKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
+    if (hasFileSearchTool && fileSearchKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
 
     // 检测路径模式（如 e:\, C:\, /home/ 等）
     if (hasTerminal || hasFileReader) {
