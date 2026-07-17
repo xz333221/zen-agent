@@ -66,14 +66,32 @@ export const fileSearch: ToolExecutor = {
     // 检查索引是否已构建
     const stats = fileIndexer.getStats()
     if (stats.totalEntries === 0) {
+      // 索引为空，自动触发构建（后台异步）
+      fileIndexer.buildIndex().catch(err => {
+        console.error('[FileSearch] Auto-build index failed:', err)
+      })
+
       return {
         callId: `fs-${Date.now()}`,
         success: false,
         result: null,
         resultType: 'error',
-        resultSummary: '文件索引尚未构建，请稍后再试或手动触发索引构建',
+        resultSummary: '文件索引正在构建中（首次启动后约 5-10 秒完成），请稍后重试。已自动触发索引构建。',
         duration: Date.now() - startTime,
-        error: 'Index not built'
+        error: 'Index building in progress'
+      }
+    }
+
+    // 如果索引正在构建中
+    if (stats.building) {
+      return {
+        callId: `fs-${Date.now()}`,
+        success: false,
+        result: null,
+        resultType: 'error',
+        resultSummary: `文件索引正在构建中: ${stats.buildProgress}，请稍后重试。`,
+        duration: Date.now() - startTime,
+        error: 'Index building in progress'
       }
     }
 

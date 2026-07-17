@@ -18,7 +18,7 @@
 import { llm } from '../providers/llm'
 import { isLLMConfigured, getConfig, getSystemPrompt } from '../providers/llm-config'
 import { parseIntent, toIntentDetail } from './intent-parser'
-import { executeAction, getToolNames, toActDetail } from './action-executor'
+import { executeAction, getToolNames, getToolDefs, toActDetail } from './action-executor'
 import { reflect } from './reflection'
 import { ContextManager, type ManagedContext } from './context-manager'
 import { countTextTokens } from '../utils/token-counter'
@@ -32,6 +32,7 @@ import type { MemorySearchResult } from '../memory/types'
 import type { SkillMatchResult } from '../skills/types'
 import type { AgentContext, AgentResult, AgentCallbacks, ReActStep } from './types'
 import type { TraceStep, ExecutionTrace, StepDetail, ThinkDetail, ObserveDetail, MemoryDetail, SkillMatchDetail } from '../../src/shared/types'
+import type { ToolDef } from '../tools/types'
 
 const MAX_ITERATIONS = 50  // 最大循环次数（大模型上下文充足，放宽限制）
 
@@ -58,7 +59,11 @@ export class AgentLoop {
   private nudge15Count = 0  // 纠偏机制1.5：复用旧数据
   private nudge2Count = 0  // 纠偏机制2：不信任工具结果
   private nudge3Count = 0  // 纠偏机制3：搜索结果不足
+  private nudge4Count = 0  // 纠偏机制4：推卸工作给用户
+  private nudge5Count = 0  // 纠偏机制5：声称"我不能/没有能力"但实际有工具可用
   private readonly NUDGE_MAX = 2  // 每个纠偏机制最多触发 2 次
+  // 工具需求评估结果（在 ReAct 循环前通过 LLM 评估，供 nudge 和 Think prompt 使用）
+  private toolAssessment: { needsTool: boolean; suggestedTools: string[]; reason: string } = { needsTool: false, suggestedTools: [], reason: '' }
 
   constructor(callbacks: AgentCallbacks = {}) {
     this.callbacks = callbacks
@@ -77,6 +82,9 @@ export class AgentLoop {
     this.nudge15Count = 0
     this.nudge2Count = 0
     this.nudge3Count = 0
+    this.nudge4Count = 0
+    this.nudge5Count = 0
+    this.toolAssessment = { needsTool: false, suggestedTools: [], reason: '' }
 
     console.log(`\n${'═'.repeat(60)}`)
     console.log(`[AgentLoop] START — input="${userInput.slice(0, 80)}${userInput.length > 80 ? '...' : ''}"`)
@@ -349,6 +357,24 @@ export class AgentLoop {
     let isComplete = false
     let finalOutput = ''
 
+    // ── 工具需求评估（LLM 驱动，替代关键词匹配）──
+    // 在 ReAct 循环开始前，用 LLM 评估用户问题是否需要工具
+    // 先用 shouldUseTool 快速预筛：关键词命中则跳过 LLM 评估（节省 API 调用）
+    // 关键词未命中时，用 LLM 做语义级判断
+    if (toolNames.length > 0) {
+      const fastCheck = this.shouldUseTool(userInput, toolNames, historyMessages)
+      if (fastCheck) {
+        this.toolAssessment = { needsTool: true, suggestedTools: [], reason: '关键词快速匹配命中' }
+        console.log('[AgentLoop] Tool assessment: fast-path match (skipped LLM call)')
+      } else {
+        console.log('[AgentLoop] Tool assessment: running LLM-based assessment...')
+        const tAssess = Date.now()
+        this.toolAssessment = await this.assessToolNeed(userInput, getToolDefs(), historyMessages)
+        llmCalls++
+        console.log(`[AgentLoop] Tool assessment ✓ ${Date.now() - tAssess}ms — needsTool=${this.toolAssessment.needsTool}`)
+      }
+    }
+
     console.log(`[AgentLoop] ReAct loop starting — complexity=${complexity}, maxIterations=${MAX_ITERATIONS}, tools=[${toolNames.join(', ')}]`)
 
     for (let i = 0; i < MAX_ITERATIONS && !isComplete; i++) {
@@ -400,16 +426,20 @@ export class AgentLoop {
         // ── 纠偏机制 1：未使用工具就回答 ──
         // 如果第一轮 LLM 就想直接回答（没用过任何工具），但用户的问题明显需要本地操作，
         // 注入强提醒让 LLM 使用 terminal/file_reader 等工具，然后重试
-        if (i === 0 && reactSteps.length === 0 && this.nudge1Count < this.NUDGE_MAX && this.shouldUseTool(userInput, toolNames, historyMessages)) {
+        if (i === 0 && reactSteps.length === 0 && this.nudge1Count < this.NUDGE_MAX && this.toolAssessment.needsTool) {
           this.nudge1Count++
           console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER without tools, but user input suggests tool use. Injecting nudge (${this.nudge1Count}/${this.NUDGE_MAX}) and retrying.`)
+
+          const suggestedHint = this.toolAssessment.suggestedTools.length > 0
+            ? `\n💡 系统评估建议使用的工具: ${this.toolAssessment.suggestedTools.join(', ')}（原因: ${this.toolAssessment.reason}）`
+            : ''
 
           // 不输出给用户，直接注入一个观察结果让 LLM 重新思考
           reactSteps.push({
             think: parsed.thought,
             action: 'FINAL_ANSWER',
             actionInput: {},
-            observation: '[系统提醒] 你直接给出了最终答案，但你还没有尝试使用工具。你运行在用户的本地电脑上（不是远程服务器），你有 terminal 工具可以执行命令。请重新思考：用户想要什么操作？你应该用哪个工具？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 terminal 或 file_reader 等工具完成用户的请求。'
+            observation: `[系统提醒] 你直接给出了最终答案，但你还没有尝试使用工具。你运行在用户的本地电脑上（不是远程服务器），你有 terminal 工具可以执行命令。请重新思考：用户想要什么操作？你应该用哪个工具？${suggestedHint}\n请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 terminal 或 file_reader 等工具完成用户的请求。`
           })
 
           // 移除刚创建的 Think 步骤（因为要重试）
@@ -587,6 +617,119 @@ export class AgentLoop {
             // 不标记完成，继续循环
             continue
           }
+        }
+
+        // ── 纠偏机制 4：推卸工作给用户 ──
+        // LLM 没有使用工具（或使用后仍在回答中让用户自己去做），
+        // 但回答中包含"告诉我你的 XX""你可以通过 XX 查看""你可以自己 XX"等措辞，
+        // 说明它把本可以自己完成的工作推给了用户。
+        // 此时注入提醒，让 LLM 使用工具自己完成。
+        const lazyPatterns = [
+          '告诉我你的', '告诉我你', '请告诉我', '可以告诉我',
+          '你可以通过', '你可以查看', '你可以自己', '你可以用',
+          '你可以导出', '你可以定位', '你可以找到', '你可以查看完整',
+          '你可以直接定位', '你可以界面', '你可以在界面',
+          '如果你需要我', '如果你需要', '可以告诉我你的操作系统',
+          '告诉我你的操作系统', '告诉我你的系统',
+          '你可以终端', '你可以命令', '你可以查看历史',
+          '你可以右键', '你可以设置', '你可以打开',
+          '请提供你的', '请告诉我你的', '需要你提供',
+          '你需要告诉我', '需要你提供',
+        ]
+        const answerText4 = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+        const hasLazyPattern = lazyPatterns.some(p => answerText4.includes(p))
+        const hasTools4 = toolNames.length > 0
+        const hasNotUsedTools4 = reactSteps.length === 0 || !reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
+
+        if (hasLazyPattern && hasTools4 && hasNotUsedTools4 && this.nudge4Count < this.NUDGE_MAX && i < MAX_ITERATIONS - 2) {
+          this.nudge4Count++
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains "push work to user" patterns. Injecting nudge (${this.nudge4Count}/${this.NUDGE_MAX}) and retrying.`)
+
+          reactSteps.push({
+            think: parsed.thought,
+            action: 'FINAL_ANSWER',
+            actionInput: {},
+            observation: `[系统提醒] 你的回答中包含"告诉我你的 XX""你可以通过 XX 查看"等措辞，把本可以自己完成的工作推给了用户。这是不允许的！
+
+⚠️ 重要原则：你是运行在用户本地电脑上的 AI 助手，你有 terminal、file_reader、file_search 等工具。你应该主动使用这些工具帮用户完成任务，而不是让用户自己去做。
+
+具体来说：
+1. 你已经知道用户的操作系统（${process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}），不需要询问用户操作系统版本
+2. 当用户问"存储位置""文件在哪""路径是什么"时，用 terminal 工具执行命令查找（如 dir /s 搜索文件，或查看应用数据目录）
+3. 当用户问"有哪些项目"时，用 file_search 工具搜索
+4. 当用户问"查看文件内容"时，用 file_reader 工具读取
+5. 当用户问"执行命令"时，用 terminal 工具执行
+6. 绝对不要说"你可以通过 XX 功能查看""你可以自己 XX""告诉我你的 XX" — 这些是你应该做的事！
+
+请重新思考：用户想要什么？你应该用哪个工具来完成？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用合适的工具。`
+          })
+
+          // 移除刚创建的 Think 步骤（因为要重试）
+          this.steps.pop()
+
+          // 不标记完成，继续循环
+          continue
+        }
+
+        // ── 纠偏机制 5：声称"我不能/没有能力"但实际有工具可用 ──
+        // LLM 没有使用工具就回答，且回答中包含"我没有能力""我无法""我做不到"等放弃措辞。
+        // 这种情况下，LLM 可能不知道自己可以用工具解决这个问题。
+        // 注入提醒，让 LLM 重新审视可用工具，尝试用工具完成任务。
+        const giveUpPatterns = [
+          '我没有能力', '我无法', '我做不到', '我不能', '我没有办法',
+          '我没有gps', '没有gps', '没有定位', '无法定位', '无法获取',
+          '无法访问', '不能访问', '无法真正', '不能真正',
+          '没有访问', '不能获取', '无法知道', '不能知道',
+          '我不知道你在哪', '不知道你在哪', '无法知道你的',
+          '我没有你的', '我没有这个能力', '不具备',
+          '没有这个功能', '没有这种能力', '无法提供',
+          '无法精确', '不能精确', '无法确定', '不能确定',
+          '我没有权限', '无法访问你的',
+          'i don\'t have', 'i cannot', 'i can\'t', 'i don\'t know',
+          'unable to', 'no access', 'no capability',
+        ]
+        const answerText5 = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+        const hasGiveUp = giveUpPatterns.some(p => answerText5.includes(p))
+        const hasTools5 = toolNames.length > 0
+        const hasNotUsedTools5 = reactSteps.length === 0 || !reactSteps.some(s => s.action !== 'FINAL_ANSWER' && s.action !== 'DIRECT_ANSWER')
+
+        if (hasGiveUp && hasTools5 && hasNotUsedTools5 && this.nudge5Count < this.NUDGE_MAX && i < MAX_ITERATIONS - 2) {
+          this.nudge5Count++
+          console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER contains "I can't" patterns. Injecting nudge (${this.nudge5Count}/${this.NUDGE_MAX}) and retrying.`)
+
+          // 构建工具能力提示
+          const toolDefs5 = getToolDefs()
+          const toolCapabilities = toolDefs5.map(t => `- ${t.id}: ${t.description.slice(0, 120)}`).join('\n')
+
+          reactSteps.push({
+            think: parsed.thought,
+            action: 'FINAL_ANSWER',
+            actionInput: {},
+            observation: `[系统提醒] 你的回答中包含"我没有能力""我无法""我做不到"等措辞，但你还没有尝试使用工具！
+
+⚠️ 重要：你运行在用户的本地电脑上，你有以下工具：
+${toolCapabilities}
+
+在说"我不能"之前，请先思考：
+1. 这个问题是否可以通过执行命令来解决？（如 curl 获取网络信息、dir 查找文件、系统命令获取硬件信息等）
+2. 这个问题是否可以通过搜索网络来解决？（如查最新信息、查概念解释等）
+3. 这个问题是否可以通过读取本地文件来解决？
+
+常见例子：
+- "你在哪/你的位置" → 用 terminal 执行 curl ipinfo.io 获取 IP 地理位置
+- "你有什么文件/项目" → 用 file_search 搜索
+- "文件内容是什么" → 用 file_reader 读取
+- "最新信息" → 用 web_search 搜索
+- "系统信息" → 用 terminal 执行系统命令（如 systeminfo、wmic 等）
+
+请重新思考：你能用哪个工具来解决这个问题？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，尝试使用工具。`
+          })
+
+          // 移除刚创建的 Think 步骤（因为要重试）
+          this.steps.pop()
+
+          // 不标记完成，继续循环
+          continue
         }
 
         finalOutput = parsed.actionInput || parsed.content || thinkResponse
@@ -799,8 +942,11 @@ export class AgentLoop {
     const hasTerminal = toolNames.includes('terminal')
     const hasFileReader = toolNames.includes('file_reader')
     const hasFileWriter = toolNames.includes('file_writer')
-    const toolsSection = toolNames.length > 0
-      ? `\n\n可用工具: ${toolNames.join(', ')}`
+
+    // 包含工具描述（而非仅名称），让 LLM 理解每个工具的用途
+    const toolDefs = getToolDefs()
+    const toolsSection = toolDefs.length > 0
+      ? `\n\n可用工具（含描述）:\n${this.formatToolDescriptions(toolDefs)}`
       : '\n\n当前没有可用工具，请直接回答用户问题。'
 
     const webSearchHint = hasWebSearch
@@ -931,9 +1077,25 @@ ACTION_INPUT: <JSON 格式的工具参数>
 重要：ACTION_INPUT 必须是纯 JSON，不要包含任何额外文字。
 正确示例：ACTION_INPUT: {"query": "Claude 最新模型"}
 错误示例：ACTION_INPUT: {"query": "Claude 最新模型"}\\nCONTENT: ...
-错误示例：ACTION_INPUT: {raw: "..."} ` : ''}
+错误示例：ACTION_INPUT: {raw: "..."} 
+
+⚠️ 工具使用决策流程（每次回答前必须执行）：
+1. 阅读上方「可用工具（含描述）」列表，理解每个工具能做什么
+2. 思考：这个问题是否涉及本地文件/路径/项目/系统操作/实时信息？
+3. 如果是 → 使用对应的工具（terminal/file_reader/file_search/web_search 等）
+4. 如果纯粹是知识问答或计算 → 可以直接 FINAL_ANSWER
+5. 当你不确定是否需要工具时，倾向于使用工具 — 宁可用了不需要，也不要需要却没用
+
+关键：你运行在用户的本地电脑上，你有能力直接操作。不要把工作推给用户。` : ''}
 
 规则：
+- ⚠️ 主动性原则：你是运行在用户本地电脑上的 AI 助手，你的职责是用工具帮用户完成任务，而不是指导用户自己做。绝对不要说"你可以通过 XX 查看""告诉我你的 XX""如果你需要我可以帮你"这类推卸工作的措辞。
+- ⚠️ 先想工具再说不能：在说"我没有能力""我无法""我做不到"之前，必须先检查可用工具能否解决。很多看似做不到的事可以通过命令行实现（如 curl ipinfo.io 查位置、systeminfo 查硬件、ipconfig 查网络等）。绝对不要在没尝试工具的情况下就说"我没有这个能力"。
+- 你已经知道用户的操作系统（见运行环境），不要询问用户操作系统版本
+- 当用户问"存储位置""文件在哪""路径是什么""数据库在哪"时，用 terminal 工具执行命令查找，不要让用户自己找
+- 当用户问"有哪些项目""电脑上有什么"时，用 file_search 工具搜索
+- 当用户问"查看文件内容"时，用 file_reader 工具读取
+- 当用户问"你在哪""你知道我的位置吗""我的IP是什么"时，用 terminal 执行 curl ipinfo.io 获取网络和位置信息
 - 涉及实时信息或可能过时的信息时，优先使用 web_search 工具搜索
 - 搜索时使用当前年份（${new Date().getFullYear()}年）作为关键词，不要用旧年份
 - ⚠️ 绝对不要直接复用对话历史中的旧数据来回答用户！当用户要求"准确的数据""最新数据""更新"时，必须使用 web_search 重新搜索获取最新数据
@@ -960,6 +1122,15 @@ ACTION_INPUT: <JSON 格式的工具参数>
   ): string {
     let prompt = `用户问题: ${userInput}\n`
 
+    // 首轮推理时，注入工具评估提示
+    if (previousSteps.length === 0 && toolNames.length > 0 && this.toolAssessment.needsTool) {
+      const suggested = this.toolAssessment.suggestedTools.length > 0
+        ? this.toolAssessment.suggestedTools.join(', ')
+        : '查看上方可用工具列表'
+      prompt += `\n💡 系统工具评估: 这个问题可能需要使用工具。建议考虑: ${suggested}。原因: ${this.toolAssessment.reason}\n`
+      prompt += `请先考虑是否有合适的工具可以帮助回答这个问题，再决定是否直接回答。\n`
+    }
+
     if (previousSteps.length > 0) {
       prompt += '\n之前的推理步骤:\n'
       previousSteps.forEach((step, i) => {
@@ -978,6 +1149,126 @@ ACTION_INPUT: <JSON 格式的工具参数>
   }
 
   /**
+   * 格式化工具定义为带描述的列表（供 LLM 理解每个工具的用途）
+   */
+  private formatToolDescriptions(toolDefs: ToolDef[]): string {
+    return toolDefs.map(t => {
+      // 截取描述的前 150 字符，避免过长
+      const desc = t.description.length > 150
+        ? t.description.slice(0, 150) + '...'
+        : t.description
+      return `- ${t.id}: ${desc}`
+    }).join('\n')
+  }
+
+  /**
+   * LLM 驱动的工具需求评估
+   *
+   * 替代关键词匹配的 shouldUseTool，让 LLM 根据问题语义和工具描述
+   * 判断是否需要使用工具、应该用哪个工具。
+   *
+   * 这是一种更智能、更可扩展的方式：
+   * - 不需要维护无穷的关键词列表
+   * - 能理解问题的语义意图
+   * - 能根据工具的实际描述做匹配
+   * - 能处理从未见过的新问题
+   *
+   * @returns { needsTool, suggestedTools, reason }
+   */
+  private async assessToolNeed(
+    userInput: string,
+    toolDefs: ToolDef[],
+    historyMessages: Array<{ role: string; content: string }>
+  ): Promise<{ needsTool: boolean; suggestedTools: string[]; reason: string }> {
+    // 默认值：不需要工具
+    const defaultResult = { needsTool: false, suggestedTools: [] as string[], reason: '' }
+
+    if (toolDefs.length === 0) return defaultResult
+    if (!isLLMConfigured()) return defaultResult
+
+    // 构建对话历史摘要（最近 4 条，供 LLM 理解上下文）
+    const recentHistory = historyMessages.slice(-4)
+      .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 200) : ''}`)
+      .join('\n')
+    const historySection = recentHistory
+      ? `\n\n最近对话上下文:\n${recentHistory}`
+      : ''
+
+    const platform = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'
+
+    const prompt = `你是一个工具使用评估器。请判断以下用户问题是否需要使用工具来回答。
+
+用户问题: "${userInput}"${historySection}
+
+可用工具:
+${this.formatToolDescriptions(toolDefs)}
+
+判断原则:
+- 你已知用户的操作系统是 ${platform}，不要建议询问用户操作系统
+- 当用户问"在哪""路径""存储位置""数据库""配置文件"等位置类问题时，通常需要 terminal 工具查找
+- 当用户问"有哪些项目""电脑上有什么""找一下"时，需要 file_search 工具
+- 当用户问"最新""今天""现在""实时"等实时信息时，需要 web_search 工具
+- 当用户问"查看文件""读取文件""看看代码"时，需要 file_reader 工具
+- 当用户问"写入""修改""创建文件"时，需要 file_writer 工具
+- 当用户问"打开网站""打开网页"时，需要 open_url 工具
+- 当用户问"浏览器""点击按钮""输入文字""截图"时，需要 browser 工具
+- ⚠️ 能力类问题（如"你知道我在哪吗""你能查到我的IP吗""你有什么信息"）通常需要工具：
+  - "你在哪/你的位置" → terminal 执行 curl ipinfo.io 获取 IP 地理位置
+  - "我的IP" → terminal 执行 curl ipinfo.io 或 ipconfig
+  - "系统信息/硬件信息" → terminal 执行 systeminfo / wmic 等
+  - "网络状态" → terminal 执行 ipconfig / netstat 等
+  - 这类问题看似是问你的能力，实际上用户想要你用工具去获取信息
+- 纯知识问答（如"什么是递归""解释一下概念"）不需要工具
+- 纯计算问题（如"2+2等于几"）不需要工具（除非需要计算器工具）
+- 如果不确定，倾向于需要工具（宁可多用工具也不要漏掉）
+- follow-up 问题（如"具体的存储位置呢？"）需要结合上下文判断
+
+请返回 JSON（不要其他文字）:
+{"needsTool": true, "suggestedTools": ["terminal"], "reason": "用户询问存储位置，需要用terminal查找文件路径"}`
+
+    try {
+      const config = getConfig()
+      const response = await llm.chat({
+        messages: [
+          { role: 'system', content: '你是工具使用评估助手，只返回 JSON。' },
+          { role: 'user', content: prompt }
+        ],
+        modelKey: config.defaultModelKey,
+        temperature: 0,
+        maxTokens: 300,
+        signal: this.signal,
+        timeoutMs: 10000
+      })
+
+      this.totalInputTokens += countTextTokens(prompt)
+      this.totalOutputTokens += countTextTokens(response)
+      this.modelsUsed.add(config.defaultModelKey)
+
+      // 解析 JSON
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        console.warn('[AgentLoop] assessToolNeed: no JSON in response, falling back')
+        return defaultResult
+      }
+
+      const parsed = JSON.parse(jsonMatch[0])
+      const result = {
+        needsTool: !!parsed.needsTool,
+        suggestedTools: Array.isArray(parsed.suggestedTools)
+          ? parsed.suggestedTools.filter((t: unknown) => typeof t === 'string')
+          : [],
+        reason: typeof parsed.reason === 'string' ? parsed.reason : ''
+      }
+
+      console.log(`[AgentLoop] assessToolNeed: needsTool=${result.needsTool}, suggestedTools=[${result.suggestedTools.join(', ')}], reason="${result.reason}"`)
+      return result
+    } catch (err) {
+      console.warn('[AgentLoop] assessToolNeed failed, falling back to shouldUseTool:', err)
+      return defaultResult
+    }
+  }
+
+  /**
    * 检测用户输入是否暗示需要使用工具
    *
    * 当用户要求执行本地操作（git, 运行代码, 提交, 推送等）时，
@@ -985,6 +1276,10 @@ ACTION_INPUT: <JSON 格式的工具参数>
    *
    * 也检查对话历史上下文 — 当用户发送 follow-up 消息（如"给我准确的数据"）
    * 且对话历史中包含实时数据相关话题时，也应触发工具使用。
+   *
+   * 注意：此方法现在作为 assessToolNeed 的快速预筛使用 —
+   * 如果关键词命中，跳过 LLM 评估节省 API 调用；
+   * 如果关键词未命中，由 assessToolNeed 做 LLM 评估。
    */
   private shouldUseTool(
     userInput: string,
@@ -1016,11 +1311,28 @@ ACTION_INPUT: <JSON 格式的工具参数>
 
     // 文件搜索关键词（file_search）
     const fileSearchKeywords = [
-      '找', '查找文件', '查找项目', '搜索文件', '搜索项目', '找一下', '找一下',
+      '找', '查找文件', '查找项目', '搜索文件', '搜索项目', '找一下',
       '有没有', '在哪个', '在哪个目录', '项目在哪', '仓库在哪',
-      'find file', 'find project', 'search file', 'locate',
-      'zen-agent', 'z-mind', '拉取代码', '拉代码', 'clone',
-      '电脑上', '本机', '本地项目', '所有项目', '列出项目'
+      '有哪些', '有哪些项目', '列出项目', '列出所有', '所有项目',
+      'find file', 'find project', 'search file', 'locate', 'list project',
+      '拉取代码', '拉代码', 'clone', '开源项目', '在做',
+      '电脑上', '本机', '本地项目', '本地文件',
+      '看一下项目', '看看项目', '什么项目', '几个项目'
+    ]
+
+    // 本地资源定位关键词（terminal / file_reader / file_search）
+    // 当用户询问文件/数据存储位置、路径、数据库位置等时，应该用工具查找
+    const localResourceKeywords = [
+      '存储位置', '存储在哪', '存在哪', '保存在哪', '保存在', '数据存储',
+      '数据库', 'sqlite', 'db文件', '数据文件', '数据库文件',
+      '路径是', '路径在哪', '文件路径', '具体路径', '完整路径',
+      '在哪呢', '在哪里', '在什么位置', '什么位置', '具体位置',
+      '定位', '找到这个文件', '找到文件',
+      '配置在哪', '配置文件在哪', '日志在哪', '日志文件',
+      '安装在哪', '安装在', '安装位置',
+      '数据目录', '数据文件夹', '应用数据', '应用目录',
+      '数据在', '文件在', '目录在', '文件夹在',
+      '在哪里可以找到', '在哪查看', '在哪看到',
     ]
 
     // 搜索关键词（web_search）
@@ -1044,6 +1356,8 @@ ACTION_INPUT: <JSON 格式的工具参数>
     if ((hasFileReader || hasFileWriter) && fileKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
     if (hasWebSearch && searchKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
     if (hasFileSearchTool && fileSearchKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
+    // 本地资源定位 — terminal 或 file_search 都可以查找
+    if ((hasTerminal || hasFileSearchTool || hasFileReader) && localResourceKeywords.some(kw => input.includes(kw.toLowerCase()))) return true
 
     // 检测路径模式（如 e:\, C:\, /home/ 等）
     if (hasTerminal || hasFileReader) {
@@ -1082,6 +1396,38 @@ ACTION_INPUT: <JSON 格式的工具参数>
 
       if (hasRealtimeTopic && hasUpdateIntent) {
         console.log(`[AgentLoop] shouldUseTool: follow-up request with realtime context detected`)
+        return true
+      }
+    }
+
+    // ── 上下文感知：检查对话历史是否包含本地资源相关话题 ──
+    // 当用户发送 follow-up 消息（如"具体的存储位置呢？"），且对话历史中
+    // 包含数据库、存储、路径等本地资源话题时，应该触发 terminal/file_search 工具
+    if ((hasTerminal || hasFileSearchTool || hasFileReader) && historyMessages && historyMessages.length > 0) {
+      const recentContext = historyMessages
+        .slice(-6)
+        .map(m => m.content)
+        .join(' ')
+        .toLowerCase()
+
+      // 本地资源话题关键词
+      const localResourceTopics = [
+        '存储', '数据库', 'sqlite', '保存', '数据存', '数据持久',
+        '路径', '文件在哪', '配置文件', '日志文件',
+        '应用数据', '数据目录', '应用目录',
+      ]
+
+      // follow-up 中常见的追问位置/路径的意图
+      const locationIntentKeywords = [
+        '具体', '位置', '在哪', '路径', '哪个文件', '哪个目录',
+        '哪里', '什么位置', '怎么找到', '怎么查看',
+      ]
+
+      const hasLocalTopic = localResourceTopics.some(kw => recentContext.includes(kw))
+      const hasLocationIntent = locationIntentKeywords.some(kw => input.includes(kw))
+
+      if (hasLocalTopic && hasLocationIntent) {
+        console.log(`[AgentLoop] shouldUseTool: follow-up request with local resource context detected`)
         return true
       }
     }

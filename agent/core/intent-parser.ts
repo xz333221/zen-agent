@@ -28,6 +28,21 @@ const MEDIUM_KEYWORDS = [
   '列表', '整理', '分类', '排序', '过滤'
 ]
 
+/** 需要使用本地工具的关键词（至少 medium 复杂度） */
+const TOOL_REQUIRED_KEYWORDS = [
+  '有哪些', '看一下', '看看', '找', '查找', '搜索',
+  '电脑上', '本机', '本地', '项目', '仓库', '文件',
+  '开源项目', '在做', '列出', '拉取', 'clone',
+  'git', '提交', '推送', '运行', '执行', '安装',
+  // 本地资源定位关键词
+  '存储位置', '存储在哪', '存在哪', '保存在哪', '保存在', '数据存储',
+  '数据库', 'sqlite', '数据文件', '数据库文件',
+  '路径', '在哪呢', '在哪里', '什么位置', '具体位置',
+  '定位', '配置在哪', '配置文件在哪', '日志在哪',
+  '安装在哪', '安装位置', '数据目录', '应用数据', '应用目录',
+  '数据在', '文件在', '目录在', '文件夹在',
+]
+
 const PLANNING_KEYWORDS = [
   '计划', '规划', '方案', '路线图', '里程碑', '排期',
   '项目管理', '任务分解', '步骤'
@@ -67,8 +82,13 @@ async function parseIntentWithLLM(
 {"classification": "分类标签", "complexity": "low|medium|high", "requiresPlanning": true|false}
 
 分类标签参考: coding, writing, analysis, translation, question, chat, planning, other
-复杂度: low=简单问答, medium=需要一些思考, high=需要多步推理或工具
+复杂度判定规则:
+- low: 纯知识问答（如"什么是递归"），不涉及本地文件/命令/项目
+- medium: 需要查阅本地文件、搜索项目、执行命令、或查找本地资源
+- high: 需要多步推理、任务分解、或组合多个工具完成
 requiresPlanning: 是否需要任务分解和规划
+
+重要：当用户提到"项目""文件""本地""电脑上""有哪些""查找""看一下""存储位置""数据库""路径""在哪"时，复杂度至少为 medium（因为需要使用工具查本地资源）。
 
 只返回 JSON，不要其他文字。`
 
@@ -112,6 +132,10 @@ function parseIntentWithRules(userInput: string): IntentResult {
   if (COMPLEX_KEYWORDS.some(kw => userInput.includes(kw))) {
     complexity = 'high'
   } else if (MEDIUM_KEYWORDS.some(kw => userInput.includes(kw))) {
+    complexity = 'medium'
+  }
+  // 需要本地工具的请求至少是 medium
+  if (complexity === 'low' && TOOL_REQUIRED_KEYWORDS.some(kw => userInput.includes(kw))) {
     complexity = 'medium'
   }
 

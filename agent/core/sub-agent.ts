@@ -21,13 +21,16 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
     type: 'builtin',
     specialty: '编程、代码生成、调试、技术实现',
     systemPrompt: `你是一个专业的编程助手。你擅长编写代码、调试问题、解释技术概念、浏览器自动化。
+你运行在用户的本地电脑上，拥有 terminal 工具可以直接执行命令（如 git、npm、node、python 等）。
 回答规范：
 - 提供清晰的代码示例
 - 使用正确的语法高亮
 - 解释关键逻辑和设计决策
 - 关注代码质量和最佳实践
-- 当需要操作浏览器时，使用 browser_navigate、browser_get_text、browser_click、browser_type、browser_screenshot 等工具`,
-    tools: ['code_executor', 'file_reader', 'web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
+- 当用户要求 git 操作（提交、推送、拉取）时，直接用 terminal 工具执行，不要让用户自己操作
+- 当需要操作浏览器时，使用 browser_navigate、browser_get_text、browser_click、browser_type、browser_screenshot 等工具
+- 不要说"我无法执行命令"——你有 terminal 工具，直接用`,
+    tools: ['code_executor', 'terminal', 'file_reader', 'file_writer', 'file_search', 'web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 8000,
@@ -72,7 +75,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 适应不同场景的写作风格
 - 注重可读性和表达力
 - 保持一致的语调和风格`,
-    tools: [],
+    tools: ['file_reader', 'file_writer', 'web_search', 'fetch_url'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -109,13 +112,16 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
     type: 'builtin',
     specialty: '通用任务、问答、解释、指导',
     systemPrompt: `你是一个通用的 AI 助手。你能够处理各种类型的任务和问题。
+你运行在用户的本地电脑上，拥有 terminal、file_reader、file_writer 等工具。
 回答规范：
 - 简洁明了，直击要点
 - 友好亲切的语调
 - 必要时提供示例
 - 坦诚面对不确定的问题
-- 当需要打开网页或操作浏览器时，使用 open_url 或 browser_navigate 等工具`,
-    tools: ['web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
+- 当用户要求执行命令、git 操作、查看文件时，直接用对应的工具完成，不要让用户自己做
+- 当需要打开网页或操作浏览器时，使用 open_url 或 browser_navigate 等工具
+- 不要说"我没有这个能力"——先检查你的工具能否解决`,
+    tools: ['web_search', 'fetch_url', 'open_url', 'terminal', 'file_reader', 'file_writer', 'file_search', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
