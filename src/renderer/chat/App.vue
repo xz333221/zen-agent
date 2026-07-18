@@ -187,6 +187,18 @@ onMounted(async () => {
 // 加载会话列表
 await store.loadSessions()
 
+// 加载当前模型信息
+try {
+  const config = await window.chatAPI.getConfig()
+  if (config?.defaultModel) {
+    // defaultModel 格式为 "providerId::modelName"，提取模型名
+    const modelName = config.defaultModel.split('::')[1] || config.defaultModel
+    store.setCurrentModel(modelName)
+  }
+} catch (e) {
+  console.error('Failed to load model config:', e)
+}
+
 // 加载推荐问题（基于历史记录动态生成）
 loadSuggestions()
 
@@ -302,6 +314,10 @@ function openSettings() {
           <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
         </svg>
         <span class="title-text">Zen Agent</span>
+        <span v-if="store.currentModel" class="title-model-badge" data-testid="model-badge">
+          <span class="model-dot"></span>
+          {{ store.currentModel }}
+        </span>
       </div>
       <div class="title-right">
         <button class="title-btn" data-testid="btn-settings" title="设置" @click="openSettings">
@@ -495,6 +511,39 @@ class="suggestion-item"
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+}
+
+.title-model-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin-left: 2px;
+  line-height: 1.4;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-brand);
+  flex-shrink: 0;
+  animation: model-pulse 2s ease-in-out infinite;
+}
+
+@keyframes model-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .title-right {

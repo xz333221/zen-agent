@@ -270,8 +270,34 @@ export class AgentLoop {
       if (error?.stack) {
         console.error('[AgentLoop] stack:', error.stack.split('\n').slice(0, 8).join('\n'))
       }
+
+      // 即使出错/中止，也要发送已有的 trace steps 到前端，让用户看到思考过程
+      if (this.steps.length > 0) {
+        const trace: ExecutionTrace = {
+          id: `trace-${Date.now()}`,
+          sessionId: context.sessionId,
+          messageId: `msg-${Date.now()}`,
+          startTime: this.startTime,
+          endTime: Date.now(),
+          steps: this.steps,
+          stats: {
+            totalInputTokens: this.totalInputTokens,
+            totalOutputTokens: this.totalOutputTokens,
+            estimatedCost: this.estimateCost(),
+            llmCalls: this.steps.filter(s => s.type === 'think' || s.type === 'intent').length,
+            toolCalls: this.steps.filter(s => s.type === 'act').length,
+            modelsUsed: Array.from(this.modelsUsed)
+          }
+        }
+        this.callbacks.onTraceComplete?.(trace)
+        console.log(`[AgentLoop] Sent partial trace with ${this.steps.length} steps on error/abort`)
+      }
+
       this.callbacks.onError?.(error)
-      this.callbacks.onStateChange?.('confused')
+      // 不再设置 confused 状态 — abort 是用户主动操作，应该回到 idle
+      if (!error?.message?.includes('abort')) {
+        this.callbacks.onStateChange?.('confused')
+      }
       throw err
     }
   }
@@ -319,7 +345,7 @@ export class AgentLoop {
       this.modelsUsed.add(config.defaultModelKey)
 
       let output = ''
-      await llm.chatStream(
+      const streamResult = await llm.chatStream(
         {
           messages: [
             { role: 'system', content: finalSystemPrompt },
@@ -346,6 +372,14 @@ export class AgentLoop {
         }
       )
       this.totalInputTokens += countTextTokens(finalSystemPrompt) + countTextTokens(userInput)
+
+      // 关键修复：如果流式过程中未输出任何内容（可能因为内容被 <think> 标签包裹，
+      // ThinkFilter 过滤掉了所有 chunk），使用 chatStream 返回的完整结果作为 fallback
+      if (!output && streamResult) {
+        console.warn(`[AgentLoop] Stream produced 0 chunks but streamResult has ${streamResult.length} chars — likely all content was inside <think> tags. Using fallback.`)
+        output = streamResult
+        this.callbacks.onChunk?.(output)
+      }
 
       // 添加一个 Think 步骤记录
       this.createThinkStep('问题简单，直接回答', 'DIRECT_ANSWER', [])
@@ -442,8 +476,11 @@ export class AgentLoop {
             observation: `[系统提醒] 你直接给出了最终答案，但你还没有尝试使用工具。你运行在用户的本地电脑上（不是远程服务器），你有 terminal 工具可以执行命令。请重新思考：用户想要什么操作？你应该用哪个工具？${suggestedHint}\n请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 terminal 或 file_reader 等工具完成用户的请求。`
           })
 
-          // 移除刚创建的 Think 步骤（因为要重试）
-          this.steps.pop()
+          // 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+          const lastStep = this.steps[this.steps.length - 1]
+          if (lastStep) {
+            lastStep.name = 'Think (已驳回，需用工具)'
+          }
 
           // 不标记完成，继续循环
           continue
@@ -509,8 +546,11 @@ export class AgentLoop {
 请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 web_search 工具获取最新数据。`
             })
 
-            // 移除刚创建的 Think 步骤（因为要重试）
-            this.steps.pop()
+// 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+const lastStep = this.steps[this.steps.length - 1]
+if (lastStep) {
+  lastStep.name = 'Think (已驳回，重新思考)'
+}
 
             // 不标记完成，继续循环
             continue
@@ -545,8 +585,11 @@ export class AgentLoop {
             observation: '[系统提醒] 你已经成功使用工具执行了命令，工具返回的结果是真实可信的。你运行在用户的本地电脑上（不是沙箱、不是远程容器），terminal 工具的 stdout 是命令在用户电脑上的实际输出。命令执行成功（exit 0）就代表操作真的完成了。请不要质疑工具结果，直接基于工具的输出向用户报告操作结果即可。'
           })
 
-          // 移除刚创建的 Think 步骤（因为要重试）
-          this.steps.pop()
+// 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+const lastStep = this.steps[this.steps.length - 1]
+if (lastStep) {
+  lastStep.name = 'Think (已驳回，重新思考)'
+}
 
           // 不标记完成，继续循环
           continue
@@ -611,8 +654,11 @@ export class AgentLoop {
 请继续尝试，直到获取到实际数据或确认确实无法获取后再回答。`
             })
 
-            // 移除刚创建的 Think 步骤（因为要重试）
-            this.steps.pop()
+// 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+const lastStep = this.steps[this.steps.length - 1]
+if (lastStep) {
+  lastStep.name = 'Think (已驳回，重新思考)'
+}
 
             // 不标记完成，继续循环
             continue
@@ -664,8 +710,11 @@ export class AgentLoop {
 请重新思考：用户想要什么？你应该用哪个工具来完成？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用合适的工具。`
           })
 
-          // 移除刚创建的 Think 步骤（因为要重试）
-          this.steps.pop()
+// 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+const lastStep = this.steps[this.steps.length - 1]
+if (lastStep) {
+  lastStep.name = 'Think (已驳回，重新思考)'
+}
 
           // 不标记完成，继续循环
           continue
@@ -725,14 +774,26 @@ ${toolCapabilities}
 请重新思考：你能用哪个工具来解决这个问题？请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，尝试使用工具。`
           })
 
-          // 移除刚创建的 Think 步骤（因为要重试）
-          this.steps.pop()
+// 保留 Think 步骤但标记为"已驳回"（不再 pop，让用户看到完整的思考过程）
+const lastStep = this.steps[this.steps.length - 1]
+if (lastStep) {
+  lastStep.name = 'Think (已驳回，重新思考)'
+}
 
           // 不标记完成，继续循环
           continue
         }
 
-        finalOutput = parsed.actionInput || parsed.content || thinkResponse
+        finalOutput = parsed.actionInput || parsed.content || thinkResponse || ''
+        // 防御：如果所有解析字段都为空，但 thinkResponse 有内容，直接使用 thinkResponse
+        if (!finalOutput && thinkResponse) {
+          finalOutput = thinkResponse
+        }
+        // 最终兜底：如果连 thinkResponse 都为空，给出提示而非空白
+        if (!finalOutput) {
+          finalOutput = '（模型返回了空响应，请重试或换一个问题）'
+          console.warn(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER but all fields empty! thinkResponse.len=${thinkResponse.length}, parsed=`, JSON.stringify(parsed).slice(0, 200))
+        }
         console.log(`[AgentLoop] ReAct iteration ${i + 1} — FINAL_ANSWER, output=${finalOutput.length}chars`)
 
         // 流式输出最终回答
@@ -742,6 +803,9 @@ ${toolCapabilities}
             this.callbacks.onChunk?.(chunk)
             await new Promise(r => setTimeout(r, 10)) // 轻微延迟模拟流式
           }
+        } else {
+          // 极端情况：finalOutput 仍为空，发送占位文本确保前端有内容显示
+          this.callbacks.onChunk?.('（未能生成回复，请重试）')
         }
 
         reactSteps.push({
@@ -900,8 +964,12 @@ ${toolCapabilities}
         })
       } else {
         // 未知动作，当作最终回答
-        finalOutput = parsed.content || parsed.thought || thinkResponse
-        console.log(`[AgentLoop] ReAct iteration ${i + 1} — unknown action "${parsed.action}", treating as final answer`)
+        finalOutput = parsed.content || parsed.thought || thinkResponse || ''
+        if (!finalOutput) {
+          finalOutput = '（模型返回了无法解析的响应，请重试）'
+          console.warn(`[AgentLoop] ReAct iteration ${i + 1} — unknown action "${parsed.action}", all fields empty!`)
+        }
+        console.log(`[AgentLoop] ReAct iteration ${i + 1} — unknown action "${parsed.action}", treating as final answer, output=${finalOutput.length}chars`)
         if (finalOutput) {
           const chunks = this.splitIntoChunks(finalOutput, 3)
           for (const chunk of chunks) {
@@ -955,6 +1023,8 @@ ${toolCapabilities}
 - 当你的训练数据可能过时，无法确保信息准确时
 - 当用户明确要求搜索或查询外部信息时
 - 当涉及版本号、发布日期、产品规格等可能变化的信息时
+- ⚠️ 当用户询问特定平台/产品的操作方法时（如"火山引擎怎么看使用量""GitHub怎么创建组织""微信读书怎么导出笔记"）
+  → 这些问题你不可能凭记忆准确回答，必须搜索官方文档
 对于以上情况，必须先使用 web_search 搜索获取最新信息，再基于搜索结果回答。
 不要凭记忆回答可能过时的信息，这比承认不确定更糟糕。
 
@@ -962,6 +1032,11 @@ ${toolCapabilities}
 - 搜索关键词要简洁精准，不要在关键词中放完整日期和长描述
   ✓ 好的查询: "上证指数 今日行情" / "A股 大盘 今日" / "上证指数 实时"
   ✗ 差的查询: "2026年7月13日 A股大盘走势 上证指数" （太长太具体，搜索引擎匹配不到实时数据）
+- ⚠️ 平台/产品操作类问题的搜索关键词要精准，提取"平台名 + 核心功能"即可：
+  ✓ 好的查询: "火山引擎 方舟 用量统计" / "火山引擎 ARK 用量" / "volcengine ark usage"
+  ✗ 差的查询: "火山引擎 方舟 ARK 查看 token 使用量 用量统计" （太长太杂，搜索引擎匹配不到）
+  ✓ 好的查询: "GitHub 创建组织 教程" / "微信读书 导出笔记"
+  ✗ 差的查询: "GitHub 怎么创建组织步骤详细教程方法" （冗余词太多）
 - 如果第一次搜索结果不包含用户需要的具体数据（如具体数值、价格等），不要直接放弃说"数据加载中"
   → 应该换不同关键词再搜索一次（如换更短的关键词、换同义词）
   → 或者用 fetch_url 工具抓取搜索结果中可能包含数据的页面 URL
@@ -1097,6 +1172,7 @@ ACTION_INPUT: <JSON 格式的工具参数>
 - 当用户问"查看文件内容"时，用 file_reader 工具读取
 - 当用户问"你在哪""你知道我的位置吗""我的IP是什么"时，用 terminal 执行 curl ipinfo.io 获取网络和位置信息
 - 涉及实时信息或可能过时的信息时，优先使用 web_search 工具搜索
+- ⚠️ 当用户问"怎么看""怎么用""如何操作""在哪看"等平台/产品操作类问题时，必须用 web_search 搜索官方文档，不要凭记忆回答
 - 搜索时使用当前年份（${new Date().getFullYear()}年）作为关键词，不要用旧年份
 - ⚠️ 绝对不要直接复用对话历史中的旧数据来回答用户！当用户要求"准确的数据""最新数据""更新"时，必须使用 web_search 重新搜索获取最新数据
 - 对话历史中的数据可能已经过时（特别是股价、天气、新闻等实时数据），不要直接拿来回答
@@ -1208,6 +1284,10 @@ ${this.formatToolDescriptions(toolDefs)}
 - 当用户问"在哪""路径""存储位置""数据库""配置文件"等位置类问题时，通常需要 terminal 工具查找
 - 当用户问"有哪些项目""电脑上有什么""找一下"时，需要 file_search 工具
 - 当用户问"最新""今天""现在""实时"等实时信息时，需要 web_search 工具
+- ⚠️ 当用户问"怎么看""怎么用""如何查看""如何使用""在哪看""怎么操作"等操作类问题时，需要 web_search 工具搜索官方文档或教程
+  例: "火山引擎怎么看使用量" → 需要 web_search 搜索"火山引擎 方舟 用量统计"
+  例: "GitHub 怎么创建组织" → 需要 web_search 搜索"GitHub 创建组织 教程"
+  例: "微信读书怎么导出笔记" → 需要 web_search 搜索"微信读书 导出笔记"
 - 当用户问"查看文件""读取文件""看看代码"时，需要 file_reader 工具
 - 当用户问"写入""修改""创建文件"时，需要 file_writer 工具
 - 当用户问"打开网站""打开网页"时，需要 open_url 工具
@@ -1233,7 +1313,8 @@ ${this.formatToolDescriptions(toolDefs)}
           { role: 'system', content: '你是工具使用评估助手，只返回 JSON。' },
           { role: 'user', content: prompt }
         ],
-        modelKey: config.defaultModelKey,
+        // 优先使用 fastModel（轻量分类任务），fallback 到主模型
+        modelKey: config.agent.fastModel || config.defaultModelKey,
         temperature: 0,
         maxTokens: 300,
         signal: this.signal,
@@ -1344,6 +1425,11 @@ ${this.formatToolDescriptions(toolDefs)}
       '现在', '当前', '目前', '刚刚', '-refresh', '刷新',
       '不对', '错了', '错误', '不对啊', '不太对',  // 用户指出数据有误
       '再搜', '重新搜', '再查', '重新查',  // 明确要求重新搜索
+      // 平台/产品操作类问题 — 需要搜索官方文档
+      '怎么看', '怎么用', '如何查看', '如何使用', '怎么操作',
+      '在哪看', '在哪里看', '怎么查看', '怎么找到',
+      '怎么看自己', '怎么看我的', '怎么知道',
+      '官方文档', '帮助文档', '操作手册', '使用指南',
     ]
 
     const hasTerminal = availableTools.includes('terminal')

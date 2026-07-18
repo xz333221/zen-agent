@@ -41,6 +41,11 @@ const TOOL_REQUIRED_KEYWORDS = [
   '定位', '配置在哪', '配置文件在哪', '日志在哪',
   '安装在哪', '安装位置', '数据目录', '应用数据', '应用目录',
   '数据在', '文件在', '目录在', '文件夹在',
+  // 平台/产品操作类问题 — 需要搜索官方文档
+  '怎么看', '怎么用', '如何查看', '如何使用', '怎么操作',
+  '在哪看', '在哪里看', '怎么查看', '怎么找到',
+  '怎么看自己', '怎么看我的', '怎么知道',
+  '教程', '文档', '官方文档', '帮助文档',
 ]
 
 const PLANNING_KEYWORDS = [
@@ -83,12 +88,13 @@ async function parseIntentWithLLM(
 
 分类标签参考: coding, writing, analysis, translation, question, chat, planning, other
 复杂度判定规则:
-- low: 纯知识问答（如"什么是递归"），不涉及本地文件/命令/项目
-- medium: 需要查阅本地文件、搜索项目、执行命令、或查找本地资源
+- low: 纯知识问答（如"什么是递归"），不涉及本地文件/命令/项目，也不涉及特定平台/产品的操作
+- medium: 需要查阅本地文件、搜索项目、执行命令、或查找本地资源；或者涉及特定平台/产品的操作问题（如"怎么看XX使用量""XX怎么用""如何查看XX"）——这类问题需要搜索官方文档
 - high: 需要多步推理、任务分解、或组合多个工具完成
 requiresPlanning: 是否需要任务分解和规划
 
 重要：当用户提到"项目""文件""本地""电脑上""有哪些""查找""看一下""存储位置""数据库""路径""在哪"时，复杂度至少为 medium（因为需要使用工具查本地资源）。
+当用户问"怎么看""怎么用""如何查看""如何使用""在哪看"等操作类问题时，复杂度至少为 medium（因为需要搜索官方文档或教程）。
 
 只返回 JSON，不要其他文字。`
 
@@ -97,7 +103,8 @@ requiresPlanning: 是否需要任务分解和规划
       { role: 'system', content: '你是意图分析助手，只返回 JSON。' },
       { role: 'user', content: prompt }
     ],
-    modelKey: config.defaultModelKey,
+    // 优先使用 fastModel（轻量任务），fallback 到主模型
+    modelKey: config.agent.fastModel || config.defaultModelKey,
     temperature: 0,
     maxTokens: 200,
     signal,

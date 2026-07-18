@@ -14,6 +14,9 @@ export const useChatStore = defineStore('chat', () => {
   const sessions = ref<Session[]>([])
   const sidebarCollapsed = ref(false)
 
+  // ── 当前模型 ──
+  const currentModel = ref<string>('')
+
   // ── 计算属性 ──
   const messageCount = computed(() => messages.value.length)
 
@@ -100,6 +103,11 @@ export const useChatStore = defineStore('chat', () => {
     sessionId.value = id
   }
 
+  /** 设置当前模型 */
+  function setCurrentModel(model: string) {
+    currentModel.value = model
+  }
+
   /** 加载会话列表 */
   async function loadSessions() {
     try {
@@ -155,6 +163,7 @@ export const useChatStore = defineStore('chat', () => {
     liveSteps,
     sessions,
     sidebarCollapsed,
+    currentModel,
     messageCount,
     addUserMessage,
     startAssistantMessage,
@@ -164,6 +173,7 @@ export const useChatStore = defineStore('chat', () => {
     attachTrace,
     clearMessages,
     setSessionId,
+    setCurrentModel,
     loadSessions,
     setSessions,
     toggleSidebar,
