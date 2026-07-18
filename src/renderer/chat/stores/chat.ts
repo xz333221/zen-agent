@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, ExecutionTrace, TraceStep, ImageAttachment, Session } from '@shared/types'
+import type { ChatMessage, ExecutionTrace, TraceStep, ImageAttachment, Session, LLMProviderConfig } from '@shared/types'
 
 export const useChatStore = defineStore('chat', () => {
   // ── 状态 ──
@@ -16,6 +16,10 @@ export const useChatStore = defineStore('chat', () => {
 
   // ── 当前模型 ──
   const currentModel = ref<string>('')
+  /** 完整模型 key（providerId::model），用于切换时的值匹配 */
+  const currentModelKey = ref<string>('')
+  /** 可用的 Provider 列表（用于顶部快速切换模型） */
+  const availableProviders = ref<LLMProviderConfig[]>([])
 
   // ── 计算属性 ──
   const messageCount = computed(() => messages.value.length)
@@ -108,6 +112,33 @@ export const useChatStore = defineStore('chat', () => {
     currentModel.value = model
   }
 
+  /** 设置当前完整模型 key */
+  function setCurrentModelKey(key: string) {
+    currentModelKey.value = key
+  }
+
+  /** 设置可用 Provider 列表 */
+  function setAvailableProviders(list: LLMProviderConfig[]) {
+    availableProviders.value = list
+  }
+
+  /**
+   * 切换默认模型 —— 调 IPC 持久化并更新本地状态。
+   * @param key "providerId::model"
+   */
+  async function switchModel(key: string): Promise<boolean> {
+    try {
+      await window.chatAPI.setConfig({ defaultModel: key })
+      currentModelKey.value = key
+      // defaultModel 格式为 "providerId::modelName"，提取模型名用于徽章显示
+      currentModel.value = key.split('::')[1] || key
+      return true
+    } catch (e) {
+      console.error('[chat] switchModel failed:', e)
+      return false
+    }
+  }
+
   /** 加载会话列表 */
   async function loadSessions() {
     try {
@@ -164,6 +195,8 @@ export const useChatStore = defineStore('chat', () => {
     sessions,
     sidebarCollapsed,
     currentModel,
+    currentModelKey,
+    availableProviders,
     messageCount,
     addUserMessage,
     startAssistantMessage,
@@ -174,6 +207,9 @@ export const useChatStore = defineStore('chat', () => {
     clearMessages,
     setSessionId,
     setCurrentModel,
+    setCurrentModelKey,
+    setAvailableProviders,
+    switchModel,
     loadSessions,
     setSessions,
     toggleSidebar,

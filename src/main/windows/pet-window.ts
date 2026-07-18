@@ -27,10 +27,9 @@ function getBottomRightPosition(width: number, height: number): { x: number; y: 
 export function createPetWindow(): BrowserWindow {
   if (petWindow && !petWindow.isDestroyed()) return petWindow
 
-  // 根据屏幕工作区自适应窗口尺寸（4K/高分辨率屏幕自动放大）
-  const { workArea } = screen.getPrimaryDisplay()
-  const width = Math.min(520, Math.max(340, Math.round(workArea.width * 0.16)))
-  const height = Math.min(460, Math.max(300, Math.round(workArea.height * 0.22)))
+  // 窗口尺寸仅容纳猫头鹰本体（160×160）+ 少量边距，避免透明区域拦截桌面点击
+  const width = 200
+  const height = 200
 
   // 尝试从持久化存储中恢复位置
   const savedState = getWindowState('pet')

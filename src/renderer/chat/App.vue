@@ -211,6 +211,10 @@ try {
     // defaultModel 格式为 "providerId::modelName"，提取模型名
     const modelName = config.defaultModel.split('::')[1] || config.defaultModel
     store.setCurrentModel(modelName)
+    store.setCurrentModelKey(config.defaultModel)
+  }
+  if (config?.providers) {
+    store.setAvailableProviders(config.providers)
   }
 } catch (e) {
   console.error('Failed to load model config:', e)
@@ -267,6 +271,9 @@ loadSuggestions()
   unlistenTheme = window.chatAPI.onThemeChange((data) => {
     effectiveTheme.value = data.effective
   })
+
+  // 点击外部关闭模型下拉
+  document.addEventListener('click', onDocumentClickCloseDropdown, true)
 })
 
 const themeClass = computed(() => `theme-${effectiveTheme.value}`)
@@ -279,6 +286,7 @@ onUnmounted(() => {
   unlistenTraceComplete?.()
   unlistenNewSession?.()
   unlistenTheme?.()
+  document.removeEventListener('click', onDocumentClickCloseDropdown, true)
 })
 
 // ── 关闭窗口 ──
@@ -289,6 +297,34 @@ function handleClose() {
 // ── 打开设置面板 ──
 function openSettings() {
   window.chatAPI.openPanel('settings')
+}
+
+// ── 顶部快速切换模型 ──
+const showModelDropdown = ref(false)
+/** 已启用且有模型的 Provider */
+const enabledProviders = computed(() =>
+  store.availableProviders.filter(p => p.enabled && p.models.length > 0)
+)
+const hasModels = computed(() => enabledProviders.value.length > 0)
+
+function toggleModelDropdown() {
+  showModelDropdown.value = !showModelDropdown.value
+}
+function closeModelDropdown() {
+  showModelDropdown.value = false
+}
+
+/** 点击外部区域时关闭模型下拉 */
+function onDocumentClickCloseDropdown(e: MouseEvent) {
+  if (!showModelDropdown.value) return
+  const target = e.target as HTMLElement
+  if (!target.closest('.model-switcher')) {
+    closeModelDropdown()
+  }
+}
+async function selectModel(key: string) {
+  await store.switchModel(key)
+  closeModelDropdown()
 }
 </script>
 
@@ -331,10 +367,49 @@ function openSettings() {
           <path d="M 100 103 L 93 112 Q 100 117 107 112 Z" fill="#E8A030" stroke="#C88820" stroke-width="0.5"/>
         </svg>
         <span class="title-text">Zen Agent</span>
-        <span v-if="store.currentModel" class="title-model-badge" data-testid="model-badge">
-          <span class="model-dot"></span>
-          {{ store.currentModel }}
-        </span>
+        <div class="model-switcher" data-testid="model-switcher">
+          <button
+            class="title-model-badge is-clickable"
+            :class="{ open: showModelDropdown }"
+            data-testid="model-badge"
+            title="切换模型"
+            @click="toggleModelDropdown"
+          >
+            <span class="model-dot"></span>
+            <span class="model-badge-name">{{ store.currentModel || '选择模型' }}</span>
+            <svg class="model-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+
+          <Transition name="model-dropdown">
+            <div v-if="showModelDropdown" class="model-dropdown" data-testid="model-dropdown">
+              <template v-if="hasModels">
+                <div
+                  v-for="provider in enabledProviders"
+                  :key="provider.id"
+                  class="model-group"
+                >
+                  <div class="model-group-label">{{ provider.name }}</div>
+                  <button
+                    v-for="model in provider.models"
+                    :key="`${provider.id}::${model}`"
+                    class="model-option"
+                    :class="{ active: store.currentModelKey === `${provider.id}::${model}` }"
+                    @click="selectModel(`${provider.id}::${model}`)"
+                  >
+                    <span class="model-option-check" v-if="store.currentModelKey === `${provider.id}::${model}`">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </span>
+                    <span class="model-option-name">{{ model }}</span>
+                  </button>
+                </div>
+              </template>
+              <div v-else class="model-dropdown-empty">
+                <p>尚未配置任何模型</p>
+                <button class="model-dropdown-action" @click="closeModelDropdown(); openSettings()">去设置</button>
+              </div>
+            </div>
+          </Transition>
+        </div>
       </div>
       <div class="title-right">
         <button class="title-btn" data-testid="btn-settings" title="设置" @click="openSettings">
@@ -506,6 +581,8 @@ class="suggestion-item"
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;
+  position: relative;
+  z-index: 100;
 }
 
 .title-left {
@@ -543,10 +620,154 @@ class="suggestion-item"
   letter-spacing: 0;
   margin-left: 2px;
   line-height: 1.4;
-  max-width: 160px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── 顶部快速切换模型 ── */
+.model-switcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.title-model-badge.is-clickable {
+  -webkit-app-region: no-drag;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.title-model-badge.is-clickable:hover {
+  background: color-mix(in srgb, var(--color-brand-soft) 70%, var(--color-brand) 14%);
+}
+.title-model-badge.is-clickable.open {
+  background: var(--color-brand);
+  color: #fff;
+}
+.title-model-badge.is-clickable.open .model-dot {
+  background: #fff;
+}
+
+.model-badge-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.model-caret {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform 0.18s ease;
+}
+.title-model-badge.open .model-caret {
+  transform: rotate(180deg);
+}
+
+.model-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+  -webkit-app-region: no-drag;
+}
+
+.model-group + .model-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--surface-divider);
+}
+
+.model-group-label {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.model-option:hover {
+  background: var(--surface-hover, var(--surface-card-soft));
+}
+.model-option.active {
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+  font-weight: 600;
+}
+
+.model-option-check {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--color-brand);
+}
+.model-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-dropdown-empty {
+  padding: 10px 8px;
+  text-align: center;
+}
+.model-dropdown-empty p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.model-dropdown-action {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-brand);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.model-dropdown-action:hover {
+  filter: brightness(1.08);
+}
+
+/* 下拉动画 */
+.model-dropdown-enter-active,
+.model-dropdown-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.model-dropdown-enter-from,
+.model-dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .model-dot {
