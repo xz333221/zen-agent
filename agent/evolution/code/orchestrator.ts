@@ -20,9 +20,9 @@
 
 import { exec } from 'child_process'
 import { resolve } from 'path'
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig, getSystemPrompt } from '../providers/llm-config'
-import { countTextTokens } from '../utils/token-counter'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig, getSystemPrompt } from '../../providers/llm-config'
+import { countTextTokens } from '../../utils/token-counter'
 import { TokenBudgetManager } from './token-budget'
 import { CodeModifier } from './code-modifier'
 import { BuildTester } from './build-tester'
@@ -47,7 +47,7 @@ import type {
 import { DEFAULT_EVOLUTION_CONFIG } from './types'
 
 /** 项目根目录 */
-const PROJECT_ROOT = resolve(__dirname, '..', '..')
+const PROJECT_ROOT = resolve(__dirname, '..', '..', '..')
 
 /**
  * 进化事件回调
@@ -483,7 +483,7 @@ export class EvolutionOrchestrator {
       log('committing', '改进成功，提交 Git commit')
 
       if (this.config.autoCommit) {
-        const commitMsg = `chore(self-evolution): ${plan.goal}
+        const commitMsg = `chore(evolution/code): ${plan.goal}
 
 改进来源: ${analysisResult.summary}
 修改文件: ${plan.changes.map(c => c.filePath).join(', ')}

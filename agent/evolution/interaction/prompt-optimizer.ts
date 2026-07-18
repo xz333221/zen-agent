@@ -9,16 +9,16 @@
  * - 版本管理 + 回滚
  */
 
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig, getSystemPrompt } from '../providers/llm-config'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig, getSystemPrompt } from '../../providers/llm-config'
 import {
   createPromptVersion,
   getCurrentPrompt,
   getPromptVersions,
   rollbackToVersion,
   updatePromptPerformance
-} from '../../src/main/storage/repositories/prompts'
-import { getAllFeedback } from '../../src/main/storage/repositories/prompts'
+} from '../../../src/main/storage/repositories/prompts'
+import { getAllFeedback } from '../../../src/main/storage/repositories/prompts'
 import { collectFeedbackContext } from './feedback-collector'
 
 /** 优化结果 */

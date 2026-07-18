@@ -14,8 +14,8 @@
  * 4. 将技能内容注入系统提示词
  */
 
-import { generateEmbedding } from '../memory/embeddings'
-import { cosineSimilarity } from '../memory/vector-store'
+import { generateEmbedding } from '../../memory/embeddings'
+import { cosineSimilarity } from '../../memory/vector-store'
 import {
   createSkill,
   getActiveSkills,
@@ -24,10 +24,10 @@ import {
   updateSkillStats,
   getAllSkills,
   updateSkill
-} from '../../src/main/storage/repositories/skills'
+} from '../../../src/main/storage/repositories/skills'
 import { generateSkill } from './skill-generator'
 import type { DetectedPattern } from './pattern-detector'
-import type { SkillMatchResult, SkillDef } from '../skills/types'
+import type { SkillMatchResult, SkillDef } from '../../skills/types'
 
 /** 技能匹配选项 */
 export interface SkillMatchOptions {

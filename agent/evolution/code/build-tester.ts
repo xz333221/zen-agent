@@ -14,8 +14,8 @@
 
 import { exec } from 'child_process'
 import { resolve } from 'path'
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig } from '../providers/llm-config'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig } from '../../providers/llm-config'
 import type { TestResult, EvaluationResult, SelfEvolutionConfig } from './types'
 
 /** 项目根目录 */

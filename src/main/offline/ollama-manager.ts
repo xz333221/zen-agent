@@ -83,7 +83,7 @@ async function listModels(host: string): Promise<OllamaModel[]> {
   try {
     const response = await fetch(`${host}/api/tags`)
     if (!response.ok) return []
-    const data = await response.json()
+    const data = await response.json() as { models?: any[] }
     return (data.models || []).map((m: any) => ({
       name: m.name,
       size: m.size || 0,

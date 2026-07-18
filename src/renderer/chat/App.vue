@@ -37,16 +37,32 @@ function onTitleMouseUp() {
 
 // ── 发送消息 ──
 async function handleSend(message: string, images?: ImageAttachment[]) {
-  store.addUserMessage(message, images)
-  store.startAssistantMessage()
+  console.log(`[App.vue] handleSend called: message="${message?.slice(0, 50)}", images=${images?.length || 0}`)
+  if (images && images.length > 0) {
+    console.log(`[App.vue] Image details:`, images.map(img => ({ id: img.id, mimeType: img.mimeType, width: img.width, height: img.height, dataLen: img.data?.length || 0 })))
+  }
+  try {
+    store.addUserMessage(message, images)
+    console.log(`[App.vue] addUserMessage OK`)
+    store.startAssistantMessage()
+    console.log(`[App.vue] startAssistantMessage OK`)
 
-  await scrollToBottom()
+    await scrollToBottom()
+    console.log(`[App.vue] scrollToBottom OK, calling IPC send...`)
 
-  // 通过 IPC 发送到主进程
-  await window.chatAPI.send(message, images)
+    // 通过 IPC 发送到主进程
+    // 关键修复：Vue ref 中的对象是响应式 Proxy，Electron IPC 的结构化克隆无法处理 Proxy
+    // 必须深拷贝为纯对象后再传递
+    const plainImages = images ? JSON.parse(JSON.stringify(images)) as ImageAttachment[] : undefined
+    console.log(`[App.vue] Images deep-cloned for IPC: ${plainImages?.length || 0} items`)
+    await window.chatAPI.send(message, plainImages)
+    console.log(`[App.vue] IPC send completed`)
 
-  // 发送后刷新会话列表
-  store.loadSessions()
+    // 发送后刷新会话列表
+    store.loadSessions()
+  } catch (err) {
+    console.error(`[App.vue] handleSend ERROR:`, err)
+  }
 }
 
 // ── 推荐问题 ──
@@ -105,7 +121,8 @@ async function handleRetry() {
   // 重新开始流式输出
   store.startAssistantMessage()
   await scrollToBottom()
-  await window.chatAPI.send(lastUserMsg.content, lastUserMsg.images)
+  const plainRetryImages = lastUserMsg.images ? JSON.parse(JSON.stringify(lastUserMsg.images)) as ImageAttachment[] : undefined
+  await window.chatAPI.send(lastUserMsg.content, plainRetryImages)
   store.loadSessions()
 }
 

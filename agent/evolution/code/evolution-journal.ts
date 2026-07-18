@@ -12,7 +12,7 @@
  * 这些记录供后续进化参考，避免重复尝试已知失败的改进。
  */
 
-import { query, execute } from '../../src/main/storage/database'
+import { query, execute } from '../../../src/main/storage/database'
 import type { EvolutionRecord, EvolutionLogEntry, EvolutionOutcome } from './types'
 
 // ── 数据库表行映射 ──

@@ -150,7 +150,7 @@ export class FileIndexer {
   /**
    * 递归扫描目录
    */
-  private scanDirectory(dirPath: string, depth: number, maxDepth: number): int {
+  private scanDirectory(dirPath: string, depth: number, maxDepth: number): number {
     if (depth > maxDepth) return 0
 
     let count = 0
@@ -220,7 +220,7 @@ export class FileIndexer {
   /**
    * 检测项目类型
    */
-  private detectProjectType(entries: Array<{ name: string; isDirectory: boolean }>): string | undefined {
+  private detectProjectType(entries: Array<{ name: string; isDirectory: () => boolean }>): string | undefined {
     const names = new Set(entries.map(e => e.name))
 
     // 检查精确匹配

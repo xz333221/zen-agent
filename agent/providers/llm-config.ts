@@ -2,10 +2,14 @@
  * LLM 配置管理 — 持久化到本地文件
  *
  * 管理 Provider 列表、默认模型、Agent 设置。
- * 配置文件存储在 app.getPath('userData')/config.json
+ * 配置文件存储在 userDataPath/config.json
+ *
+ * 解耦 note: 历史上通过 `app.getPath('userData')` 取路径，直接 import electron。
+ * 这会让 agent 层无法在 worker_threads 中运行（worker 拿不到 electron）。
+ * 现改为由主进程在启动时调用 initLlmConfigStorage(path) 注入路径，
+ * 使本模块（以及整个 agent/ 层）对 electron 零依赖。
  */
 
-import { app } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import type { LLMProviderConfig, AgentConfig, MCPServerConfig, SearchConfig, BrowserConfig } from '@shared/types'
@@ -46,9 +50,23 @@ const DEFAULT_CONFIG: AppConfig = {
 let currentConfig: AppConfig = { ...DEFAULT_CONFIG }
 let configLoaded = false
 
+/**
+ * userData 路径 —— 由主进程在启动时注入。
+ * 默认值保证未注入时（如单测）仍可用，不会崩溃。
+ */
+let userDataPath: string =
+  process.env.ZEN_USER_DATA_PATH ?? join(process.cwd(), '.zen-agent-data')
+
+/**
+ * 注入 userData 路径（替代 `app.getPath('userData')`）。
+ * 必须在 loadConfig() 之前由主进程调用一次。
+ */
+export function initLlmConfigStorage(path: string): void {
+  userDataPath = path
+}
+
 /** 获取配置文件路径 */
 function getConfigPath(): string {
-  const userDataPath = app.getPath('userData')
   return join(userDataPath, 'config.json')
 }
 
@@ -76,9 +94,10 @@ export function loadConfig(): AppConfig {
         browser: { ...DEFAULT_BROWSER_CONFIG, ...parsed.browser }
       }
       // 向后兼容：旧配置没有 userDataMode 字段
-      if (!currentConfig.browser.userDataMode) {
+      const browser = currentConfig.browser
+      if (browser && !browser.userDataMode) {
         // 如果旧配置有 userDataDir，推断为 custom 模式；否则用默认的 app-dedicated
-        currentConfig.browser.userDataMode = currentConfig.browser.userDataDir ? 'custom' : 'app-dedicated'
+        browser.userDataMode = browser.userDataDir ? 'custom' : 'app-dedicated'
       }
     }
   } catch (err) {

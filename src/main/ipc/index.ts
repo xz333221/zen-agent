@@ -4,11 +4,11 @@ import { IPC_CHANNELS, ChatMessage, type LLMProviderConfig, type TraceStep, type
 import { getPetWindow, setPetState } from '../windows/pet-window'
 import { getChatWindow, showChatWindow, hideChatWindow } from '../windows/chat-window'
 import { llm } from '@agent/providers/llm'
-import { loadConfig, getConfig, saveConfig, isLLMConfigured, getSystemPrompt, getSearchConfig, setSearchConfig, getBrowserConfig, setBrowserConfig } from '@agent/providers/llm-config'
+import { loadConfig, getConfig, saveConfig, isLLMConfigured, getSystemPrompt, getSearchConfig, setSearchConfig, getBrowserConfig, setBrowserConfig, initLlmConfigStorage } from '@agent/providers/llm-config'
 import { ensureDatabase } from '../storage/database'
 import { createSession, getSession, updateSessionTitle, incrementMessageCount, getAllSessions, deleteSession } from '../storage/repositories/sessions'
 import { addMessage, getMessages, getRecentMessages } from '../storage/repositories/messages'
-import { AgentLoop, createAgentContext } from '@agent/core/agent-loop'
+import { AgentRunner, classifyAgentError, type AgentEventSink } from '../agent-runner'
 import * as settingsWindowModule from '../windows/settings-window'
 import * as skillsWindowModule from '../windows/skills-window'
 import * as memoryWindowModule from '../windows/memory-window'
@@ -24,18 +24,18 @@ import {
   recordExplicitFeedback,
   recordImplicitFeedback,
   shouldOptimizePrompt
-} from '@agent/evolution/feedback-collector'
+} from '@agent/evolution/interaction/feedback-collector'
 import {
   initOrchestrator,
   getOrchestrator
-} from '@agent/self-evolution/orchestrator'
+} from '@agent/evolution/code/orchestrator'
 import {
   getRecentEvolutionRecords,
   getEvolutionRecord,
   getEvolutionStats
-} from '@agent/self-evolution/evolution-journal'
-import { DEFAULT_EVOLUTION_CONFIG } from '@agent/self-evolution/types'
-import type { SelfEvolutionConfig } from '@agent/self-evolution/types'
+} from '@agent/evolution/code/evolution-journal'
+import { DEFAULT_EVOLUTION_CONFIG } from '@agent/evolution/code/types'
+import type { SelfEvolutionConfig } from '@agent/evolution/code/types'
 import { registerBuiltinTools, initFileIndex } from '@agent/tools/tool-registry'
 import { getToolDefs, executeAction } from '@agent/core/action-executor'
 import type { ToolDef } from '@agent/tools/types'
@@ -51,7 +51,7 @@ import {
   deleteMemory
 } from '@agent/memory/vector-store'
 import { memoryManager } from '@agent/memory/memory-manager'
-import type { Skill, MemoryItem, PluginManifest } from '@shared/types'
+import type { MemoryItem, PluginManifest } from '@shared/types'
 import {
   initPromptOptimizer,
   getActivePrompt,
@@ -62,10 +62,12 @@ import {
   setABTestConfig,
   getABTestConfig,
   concludeABTest
-} from '@agent/evolution/prompt-optimizer'
+} from '@agent/evolution/interaction/prompt-optimizer'
 
-// ── 当前请求的中止控制器 ──
-let currentAbortController: AbortController | null = null
+// ── Agent 执行服务（拥有 AgentLoop 生命周期 + 中止信号）──
+// 抽出此层是为了把 Agent 执行移出主进程: 未来 run() 可改为在 worker_threads
+// 中执行并通过 MessagePort 转发事件，本文件的 sink 与 handler 都不用改。
+const agentRunner = new AgentRunner()
 
 // ── 当前活跃会话 ID ──
 let currentSessionId: string | null = null
@@ -74,6 +76,8 @@ let currentSessionId: string | null = null
  * 注册所有 IPC 处理器
  */
 export async function registerIpcHandlers(): Promise<void> {
+  // 注入 userData 路径（让 agent 层对 electron 零依赖，可移入 worker）
+  initLlmConfigStorage(app.getPath('userData'))
   // 启动时加载配置
   loadConfig()
 
@@ -112,6 +116,12 @@ initFileIndex()
 function registerChatHandlers(): void {
   // 用户发送消息
   ipcMain.handle(IPC_CHANNELS.CHAT_SEND, async (_event, message: string, images?: ImageAttachment[], sessionId?: string) => {
+    console.log(`\n[IPC] ═══ CHAT_SEND received ═══`)
+    console.log(`[IPC] message="${message?.slice(0, 80)}", images=${images?.length || 0}, sessionId=${sessionId}`)
+    if (images && images.length > 0) {
+      console.log(`[IPC] Image details:`, images.map(img => ({ mimeType: img.mimeType, width: img.width, height: img.height, dataLen: img.data?.length || 0 })))
+    }
+
     const chatWin = getChatWindow()
     if (!chatWin) return { success: false, error: 'Chat window not found' }
 
@@ -148,163 +158,149 @@ function registerChatHandlers(): void {
     // 更新消息计数
     incrementMessageCount(sid)
 
-  // ── 通过 AgentLoop 执行（ReAct 循环 + 追踪步骤） ──
-  // AgentLoop 内部会检测 LLM 是否配置，未配置时使用 mock 响应
-  currentAbortController = new AbortController()
-
   // 通知自进化编排器：用户有活动（重置空闲计时器）
   getOrchestrator()?.notifyActivity()
 
-    let fullResponse = ''
+  // ── 通过 AgentRunner 执行（ReAct 循环 + 追踪步骤） ──
+  // AgentRunner 拥有 AgentLoop 生命周期、中止信号、回调装配。
+  // 这里只提供 AgentEventSink：把 Agent 事件转发到渲染进程。
+  // 未来把 Agent 移入 worker 时，sink 改成"往 MessagePort postMessage"即可，
+  // 本 handler 无需改动。
+  const sink: AgentEventSink = {
+    onChunk: (delta: string) => chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_CHUNK, { delta, messageId }),
+    onStepStart: (step: TraceStep) => chatWin.webContents.send(IPC_CHANNELS.CHAT_TRACE_STEP, step),
+    onTraceComplete: (trace: ExecutionTrace) => chatWin.webContents.send(IPC_CHANNELS.CHAT_TRACE_COMPLETE, trace),
+    onStateChange: (state: string) => setPetState(state as any),
+    onError: (error: Error) => {
+      const errorInfo = classifyAgentError(error)
+      chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_ERROR, { message: errorInfo.userMessage, type: errorInfo.type, messageId })
+    }
+  }
 
-    try {
-      const config = getConfig()
+  try {
+    const config = getConfig()
 
-      // 从 SQLite 加载历史消息
-      const history = getRecentMessages(sid, 20)
-      // 使用 Prompt 优化器获取当前活跃的 Prompt（支持 A/B 测试）
-      const activePrompt = getActivePrompt()
-      const messages = [
-        { role: 'system' as const, content: activePrompt },
-        ...history.map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content
-        }))
+    // 从 SQLite 加载历史消息
+    const history = getRecentMessages(sid, 20)
+    // 使用 Prompt 优化器获取当前活跃的 Prompt（支持 A/B 测试）
+    const activePrompt = getActivePrompt()
+    const messages = [
+      { role: 'system' as const, content: activePrompt },
+      ...history.map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content
+      }))
+    ]
+
+    // 如果有图片附件，将最后一条用户消息替换为多模态内容 (T-021)
+    if (images && images.length > 0) {
+      console.log(`[IPC] Building multimodal message with ${images.length} image(s)`)
+      const userMessageParts: any[] = [
+        { type: 'text', text: message || '请分析这张图片' }
       ]
-
-      // 如果有图片附件，将最后一条用户消息替换为多模态内容 (T-021)
-      if (images && images.length > 0) {
-        const userMessageParts: any[] = [
-          { type: 'text', text: message || '请分析这张图片' }
-        ]
-        for (const img of images) {
-          userMessageParts.push({
-            type: 'image_url',
-            image_url: { url: `data:${img.mimeType};base64,${img.data}` }
-          })
-        }
-        // 找到最后一条 user 消息并替换为多模态内容
-        const lastUserIdx = messages.findLastIndex(m => m.role === 'user')
-        if (lastUserIdx >= 0) {
-          messages[lastUserIdx] = {
-            role: 'user' as const,
-            content: userMessageParts as any
-          }
-        } else {
-          messages.push({
-            role: 'user' as const,
-            content: userMessageParts as any
-          })
-        }
+      for (const img of images) {
+        console.log(`[IPC] Adding image: mimeType=${img.mimeType}, base64Len=${img.data?.length || 0}`)
+        userMessageParts.push({
+          type: 'image_url',
+          image_url: { url: `data:${img.mimeType};base64,${img.data}` }
+        })
       }
+      // 找到最后一条 user 消息并替换为多模态内容
+      const lastUserIdx = messages.findLastIndex(m => m.role === 'user')
+      console.log(`[IPC] lastUserIdx=${lastUserIdx}, total messages=${messages.length}`)
+      if (lastUserIdx >= 0) {
+        messages[lastUserIdx] = {
+          role: 'user' as const,
+          content: userMessageParts as any
+        }
+        console.log(`[IPC] Replaced message[${lastUserIdx}] with multimodal content (${userMessageParts.length} parts)`)
+      } else {
+        messages.push({
+          role: 'user' as const,
+          content: userMessageParts as any
+        })
+        console.log(`[IPC] Appended new multimodal user message`)
+      }
+    } else {
+      console.log(`[IPC] No images, plain text message`)
+    }
 
-      // 创建 Agent 上下文
-      const agentContext = createAgentContext(sid, messages, {
+    console.log(`[IPC] Running AgentRunner: messages=${messages.length}, maxTokens=${config.agent.maxTokens}`)
+
+    const { result } = await agentRunner.run({
+      message,
+      sessionId: sid,
+      messages,
+      settings: {
         maxTokens: config.agent.maxTokens,
         outputReserve: config.agent.outputReserve,
         recentMessageWindow: config.agent.recentMessageWindow,
         compressionThreshold: config.agent.compressionThreshold,
         maxMemoriesRetrieved: config.agent.maxMemoriesRetrieved,
         maxSkillsLoaded: config.agent.maxSkillsLoaded
-      })
-      agentContext.signal = currentAbortController.signal
-
-      // 创建 AgentLoop 并执行
-      const agent = new AgentLoop({
-        onChunk: (delta: string) => {
-          fullResponse += delta
-          chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_CHUNK, {
-            delta,
-            messageId
-          })
-        },
-        onStepStart: (step: TraceStep) => {
-          chatWin.webContents.send(IPC_CHANNELS.CHAT_TRACE_STEP, step)
-        },
-        onStepComplete: () => {
-          // 步骤完成（实时 UI 更新可在此处理）
-        },
-        onTraceComplete: (trace: ExecutionTrace) => {
-          chatWin.webContents.send(IPC_CHANNELS.CHAT_TRACE_COMPLETE, trace)
-        },
-        onStateChange: (state: string) => {
-          setPetState(state as any)
-        },
-        onError: (error: Error) => {
-          const errorInfo = classifyError(error)
-          chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_ERROR, {
-            message: errorInfo.userMessage,
-            type: errorInfo.type,
-            messageId
-          })
-        }
-      })
-
-      const result = await agent.run(message, agentContext)
-
-      // 保存 assistant 消息到 SQLite
-      addMessage(sid, {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: result.content,
-        timestamp: Date.now(),
-        trace: result.trace
-      })
-
-      // 更新消息计数
-      incrementMessageCount(sid)
-
-      chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_DONE, { messageId })
-      setPetState('happy')
-
-      // 短暂 happy 后回到 idle
-      setTimeout(() => setPetState('idle'), 1500)
-
-      currentAbortController = null
-      return { success: true }
-    } catch (err) {
-      currentAbortController = null
-      const error = err as Error
-      console.error(`[IPC] CHAT_SEND error — messageId=${messageId}, name=${error?.name}, message=${error?.message}`)
-      if (error?.stack) {
-        console.error('[IPC] CHAT_SEND stack:', error.stack.split('\n').slice(0, 8).join('\n'))
       }
-      const errorInfo = classifyError(error)
-      console.error(`[IPC] CHAT_SEND classified — type=${errorInfo.type}, userMessage="${errorInfo.userMessage}"`)
+    }, sink)
+    console.log(`[IPC] AgentRunner completed, content length=${result.content?.length || 0}`)
 
-      // 如果是用户主动中止，不报错
-      if (errorInfo.type === 'aborted') {
-        // 保存已生成的部分回复
-        if (fullResponse) {
-          addMessage(sid, {
-            id: `assistant-${Date.now()}`,
-            role: 'assistant',
-            content: fullResponse,
-            timestamp: Date.now()
-          })
-        }
-        chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_DONE, { messageId })
-        setPetState('idle')
-        return { success: true, aborted: true }
-      }
+    // 保存 assistant 消息到 SQLite
+    addMessage(sid, {
+      id: `assistant-${Date.now()}`,
+      role: 'assistant',
+      content: result.content,
+      timestamp: Date.now(),
+      trace: result.trace
+    })
 
-      chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_ERROR, {
-        message: errorInfo.userMessage,
-        type: errorInfo.type,
-        messageId
-      })
-      setPetState('confused')
-      setTimeout(() => setPetState('idle'), 2000)
-      return { success: false, error: errorInfo.userMessage }
+    // 更新消息计数
+    incrementMessageCount(sid)
+
+    chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_DONE, { messageId })
+    setPetState('happy')
+
+    // 短暂 happy 后回到 idle
+    setTimeout(() => setPetState('idle'), 1500)
+
+    return { success: true }
+  } catch (err) {
+    const error = err as Error
+    console.error(`[IPC] CHAT_SEND error — messageId=${messageId}, name=${error?.name}, message=${error?.message}`)
+    if (error?.stack) {
+      console.error('[IPC] CHAT_SEND stack:', error.stack.split('\n').slice(0, 8).join('\n'))
     }
+    const errorInfo = classifyAgentError(error)
+    console.error(`[IPC] CHAT_SEND classified — type=${errorInfo.type}, userMessage="${errorInfo.userMessage}"`)
+
+    // 如果是用户主动中止，不报错
+    if (errorInfo.type === 'aborted') {
+      // 保存已生成的部分回复
+      const partial = agentRunner.partialResponse
+      if (partial) {
+        addMessage(sid, {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: partial,
+          timestamp: Date.now()
+        })
+      }
+      chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_DONE, { messageId })
+      setPetState('idle')
+      return { success: true, aborted: true }
+    }
+
+    chatWin.webContents.send(IPC_CHANNELS.CHAT_RESPONSE_ERROR, {
+      message: errorInfo.userMessage,
+      type: errorInfo.type,
+      messageId
+    })
+    setPetState('confused')
+    setTimeout(() => setPetState('idle'), 2000)
+    return { success: false, error: errorInfo.userMessage }
+  }
   })
 
   // 停止生成
   ipcMain.handle(IPC_CHANNELS.CHAT_STOP, async () => {
-    if (currentAbortController) {
-      currentAbortController.abort()
-      currentAbortController = null
-    }
+    agentRunner.abort()
     setPetState('idle')
     return { success: true }
   })
@@ -432,7 +428,7 @@ function registerChatHandlers(): void {
 ${historyText}`
 
       const config = getConfig()
-      const modelKey = config.fastModel || config.defaultModel
+      const modelKey = config.agent.fastModel || config.defaultModelKey
       const response = await llm.chat({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -536,7 +532,7 @@ function registerSystemHandlers(): void {
       config.mcpServers = data.mcpServers
     }
     if (data.search) {
-      config.search = { ...config.search, ...data.search }
+      config.search = { ...getSearchConfig(), ...data.search }
     }
 
     saveConfig(config)
@@ -580,7 +576,7 @@ function registerSystemHandlers(): void {
 
       const res = await fetch(url, { headers })
       if (res.ok) {
-        const data = await res.json()
+        const data = await res.json() as { data?: any[]; models?: any[] }
         const models = (data.data || data.models || []).map((m: any) =>
           typeof m === 'string' ? m : (m.id || m.name)
         ).filter(Boolean)
@@ -604,7 +600,7 @@ function registerSystemHandlers(): void {
 
       const res = await fetch(url, { headers })
       if (res.ok) {
-        const data = await res.json()
+        const data = await res.json() as { data?: any[]; models?: any[] }
         const count = (data.data || data.models || []).length
         return { success: true, message: `连接成功，可用模型 ${count} 个` }
       } else {
@@ -1029,43 +1025,6 @@ function registerOllamaHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.OLLAMA_SET_ENABLED, async (_event, enabled: boolean) => {
     return ollamaManager.setEnabled(enabled)
   })
-}
-
-/** 错误分类 — 将底层错误转为用户友好的消息 */
-function classifyError(error: Error): {
-  type: 'network' | 'auth' | 'rate_limit' | 'aborted' | 'timeout' | 'unknown'
-  userMessage: string
-} {
-  const msg = (error?.message || String(error ?? '')).toLowerCase()
-
-  // ⚠ 先检查超时 — 超时的 error message 包含 "timed out"，必须优先于 abort 检查
-  // 因为 withTimeout 超时后会 abort signal，OpenAI SDK 会报 "aborted" 但根本原因是超时
-  if (msg.includes('timed out') || msg.includes('timeout')) {
-    return { type: 'timeout', userMessage: '请求超时，请稍后重试或检查网络连接' }
-  }
-
-  // 用户主动中止（点击停止按钮）— 仅匹配纯 abort，排除 timeout
-  if (msg === 'aborted' || msg.includes('user abort') || msg.includes('request was aborted')) {
-    // 进一步检查是否为超时导致的 abort
-    if (msg.includes('timed out') || msg.includes('timeout')) {
-      return { type: 'timeout', userMessage: '请求超时，请稍后重试或检查网络连接' }
-    }
-    return { type: 'aborted', userMessage: '已停止生成' }
-  }
-
-  if (msg.includes('401') || msg.includes('unauthorized') || msg.includes('invalid api key')) {
-    return { type: 'auth', userMessage: 'API Key 无效，请在设置中检查配置' }
-  }
-
-  if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) {
-    return { type: 'rate_limit', userMessage: '请求过于频繁，请稍后重试' }
-  }
-
-  if (msg.includes('econnrefused') || msg.includes('enetunreach') || msg.includes('fetch failed')) {
-    return { type: 'network', userMessage: '无法连接到 API 服务器，请检查网络或 baseURL 配置' }
-  }
-
-  return { type: 'unknown', userMessage: `发生错误: ${error?.message || String(error ?? '未知错误')}` }
 }
 
 // ═══════════════════════════════════════════════════════════

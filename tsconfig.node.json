@@ -4,7 +4,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022"],
+    "lib": ["ES2023", "DOM"],
     "outDir": "out",
     "rootDir": ".",
     "strict": true,
@@ -15,6 +15,12 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@agent/*": ["agent/*"],
+      "@shared/*": ["src/shared/*"],
+      "@main/*": ["src/main/*"]
+    },
     "types": ["node", "electron"]
   },
   "include": [

@@ -13,10 +13,10 @@
  * - content: Prompt 模板（含变量占位符）
  */
 
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig } from '../providers/llm-config'
-import { generateEmbedding } from '../memory/embeddings'
-import type { SkillProposal } from '../skills/types'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig } from '../../providers/llm-config'
+import { generateEmbedding } from '../../memory/embeddings'
+import type { SkillProposal } from '../../skills/types'
 import type { DetectedPattern } from './pattern-detector'
 
 /** 技能生成结果 */

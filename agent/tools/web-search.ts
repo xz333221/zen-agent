@@ -697,6 +697,30 @@ export async function performSearch(
     }
   }
 
+  // 3. 第三引擎兜底：主引擎和备用引擎都返回 0 结果时，自动尝试百度/Bing
+  //    百度对中文查询最友好，作为最后兜底确保不会因为单个引擎失效而完全搜不到结果
+  if (searchResults.length === 0 && !signal?.aborted) {
+    const triedEngines = new Set<string>([cfg.engine, cfg.fallbackEngine])
+    // 优先尝试百度（中文查询最佳）
+    if (!triedEngines.has('baidu')) {
+      console.log(`[WebSearch] 主引擎和备用引擎均无结果，兜底尝试百度...`)
+      const baiduResult = await searchWithEngine('baidu', query, maxResults, cfg, signal)
+      if (baiduResult.results.length > 0) {
+        searchResults = baiduResult.results
+        engine = `${engine} + Baidu(兜底)`
+      }
+    }
+    // 百度也没用或已试过，尝试 Bing
+    if (searchResults.length === 0 && !triedEngines.has('bing') && !signal?.aborted) {
+      console.log(`[WebSearch] 仍无结果，兜底尝试 Bing...`)
+      const bingResult = await searchWithEngine('bing', query, maxResults, cfg, signal)
+      if (bingResult.results.length > 0) {
+        searchResults = bingResult.results
+        engine = `${engine} + ${bingResult.engine}(兜底)`
+      }
+    }
+  }
+
   const finalResults = searchResults.slice(0, maxResults)
 
   // 解析百度重定向链接（获取真实 URL）

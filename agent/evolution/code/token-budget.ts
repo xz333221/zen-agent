@@ -11,7 +11,7 @@
  */
 
 import { getTokenUsageSince, recordTokenUsage } from './evolution-journal'
-import { countTextTokens } from '../utils/token-counter'
+import { countTextTokens } from '../../utils/token-counter'
 import type { SelfEvolutionConfig, TokenBudget, TokenUsageRecord } from './types'
 
 /**

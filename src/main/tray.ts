@@ -25,7 +25,7 @@ export function isPetSleeping(): boolean {
  * 优先使用 build/icon.png 或 build/icon.ico，
  * 如果不存在，则生成一个品牌色的圆形图标（猫头鹰眼睛造型）。
  */
-function createTrayIcon(): nativeImage {
+function createTrayIcon(): Electron.NativeImage {
   // 尝试加载图标文件
   const iconPathPng = join(app.getAppPath(), 'build', 'icon.png')
   const iconPathIco = join(app.getAppPath(), 'build', 'icon.ico')

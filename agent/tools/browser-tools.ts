@@ -282,7 +282,11 @@ export const browserType: ToolExecutor = {
       const page = await browserManager.getPage()
 
       await page.waitForSelector(selector, { visible: true, timeout: 10000 })
-      await page.click(selector, { clickCount: 3 }) // 选中所有文字
+      // 聚焦后全选（puppeteer 新版 ClickOptions 已无 clickCount，用 Ctrl+A 选中所有文字）
+      await page.click(selector)
+      await page.keyboard.down('Control')
+      await page.keyboard.press('KeyA')
+      await page.keyboard.up('Control')
       await page.keyboard.press('Backspace') // 清空
       await page.type(selector, text, { delay: 30 }) // 逐字输入模拟人类
 

@@ -30,11 +30,33 @@ import {
   type CountableMessage
 } from '../utils/token-counter'
 import { summarizeMessages, updateSummary, type SummaryResult, type SummarizableMessage } from './summarizer'
+import { extractTextFromContent } from '../utils/multimodal'
+import type { ChatMessagePart } from '../providers/types'
+
+/** 检查消息列表中末尾的 user 消息是否已包含 userInput 文本（避免重复追加） */
+function lastUserMessageMatches(
+  messages: Array<{ role: string; content: string | ChatMessagePart[] }>,
+  userInput: string
+): boolean {
+  if (!userInput || messages.length === 0) return false
+  // 从末尾向前查找最后一条 user 消息
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role === 'user') {
+      const text = extractTextFromContent(msg.content)
+      // 如果最后一条 user 消息的文本与 userInput 相同或包含它，则不重复追加
+      return text === userInput || text.includes(userInput) || userInput.includes(text)
+    }
+    // 遇到 assistant 消息就停止（说明 user 消息不是最后一条）
+    if (msg.role === 'assistant') return false
+  }
+  return false
+}
 
 /** 管理后的上下文 */
 export interface ManagedContext {
   /** 最终发送给 LLM 的消息列表 */
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>
   /** Token 预算分布 */
   breakdown: {
     systemPrompt: number
@@ -121,14 +143,14 @@ export class ContextManager {
    * @returns 管理后的上下文
    */
   async manage(
-    allMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    allMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>,
     userInput: string,
     sessionId: string,
     signal?: AbortSignal
   ): Promise<ManagedContext> {
     // ── 1. 分离系统提示和历史消息 ──
     const systemPrompt = allMessages[0]?.role === 'system'
-      ? allMessages[0].content
+      ? (typeof allMessages[0].content === 'string' ? allMessages[0].content : '')
       : ''
     const historyMessages = allMessages[0]?.role === 'system'
       ? allMessages.slice(1)
@@ -171,7 +193,7 @@ export class ContextManager {
     )
 
     // ── 6. 组装最终消息列表 ──
-    const finalMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+    const finalMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }> = []
 
     // 系统提示
     if (systemPrompt) {
@@ -191,8 +213,8 @@ export class ContextManager {
       finalMessages.push(msg)
     }
 
-    // 用户当前输入
-    if (userInput) {
+    // 用户当前输入（如果 retainedMessages 末尾的 user 消息已包含 userInput，则不重复追加）
+    if (userInput && !lastUserMessageMatches(result.retainedMessages, userInput)) {
       finalMessages.push({ role: 'user', content: userInput })
     }
 
@@ -227,12 +249,12 @@ export class ContextManager {
    * 3. 如果仍超预算，逐步减少保留窗口
    */
   private async compressHistory(
-    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>,
     sessionId: string,
     availableBudget: number,
     signal?: AbortSignal
   ): Promise<{
-    retainedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+    retainedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>
     summary: SummaryResult | null
     compressedCount: number
   }> {
@@ -258,7 +280,11 @@ export class ContextManager {
       if (newMessages.length > 0) {
         const summarizableNew: SummarizableMessage[] = newMessages.map(m => ({
           role: m.role as 'user' | 'assistant' | 'system',
-          content: m.content
+          content: typeof m.content === 'string'
+            ? m.content
+            : (Array.isArray(m.content)
+                ? m.content.filter(p => p.type === 'text').map(p => p.text || '').join(' ')
+                : '')
         }))
         summaryResult = await updateSummary(cache.summary, summarizableNew, {
           maxTokens: this.config.summaryMaxTokens,
@@ -287,7 +313,11 @@ export class ContextManager {
       // 无缓存或缓存过期，重新生成完整摘要
       const summarizable: SummarizableMessage[] = toSummarize.map(m => ({
         role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content
+        content: typeof m.content === 'string'
+          ? m.content
+          : (Array.isArray(m.content)
+              ? m.content.filter(p => p.type === 'text').map(p => p.text || '').join(' ')
+              : '')
       }))
       summaryResult = await summarizeMessages(summarizable, {
         maxTokens: this.config.summaryMaxTokens,
@@ -326,10 +356,10 @@ export class ContextManager {
    * 当窗口已覆盖全部消息但仍然超预算时，逐步缩小窗口
    */
   private async shrinkWindow(
-    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>,
     availableBudget: number
   ): Promise<{
-    retainedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+    retainedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>
     summary: SummaryResult | null
     compressedCount: number
   }> {
@@ -346,8 +376,16 @@ export class ContextManager {
     const retained = historyMessages.slice(historyMessages.length - maxRetained)
 
     // 简单截取摘要（不调用 LLM，因为预算已经很紧张）
+    // 注意：多模态消息的 content 可能是数组，需要提取文本部分
     const summaryText = toSummarize
-      .map(m => `${m.role}: ${m.content.slice(0, 100)}...`)
+      .map(m => {
+        const content = typeof m.content === 'string'
+          ? m.content
+          : (Array.isArray(m.content)
+              ? m.content.filter(p => p.type === 'text').map(p => p.text || '').join(' ')
+              : '')
+        return `${m.role}: ${content.slice(0, 100)}...`
+      })
       .join('\n')
 
     const summaryTokens = countTextTokens(summaryText)
@@ -371,21 +409,22 @@ export class ContextManager {
    */
   private buildUncompressedResult(
     systemPrompt: string,
-    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>,
     userInput: string,
     systemTokens: number,
     historyTokens: number,
     userInputTokens: number
   ): ManagedContext {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }> = []
 
     if (systemPrompt) {
       messages.push({ role: 'system', content: systemPrompt })
     }
     for (const msg of historyMessages) {
+      // 直接保留原始消息（含多模态 content）
       messages.push(msg)
     }
-    if (userInput) {
+    if (userInput && !lastUserMessageMatches(historyMessages, userInput)) {
       messages.push({ role: 'user', content: userInput })
     }
 

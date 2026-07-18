@@ -14,8 +14,8 @@ import {
   updatePromptFeedback,
   getRecentNegativeFeedbackCount,
   getAllFeedback
-} from '../../src/main/storage/repositories/prompts'
-import { generateEmbedding } from '../memory/embeddings'
+} from '../../../src/main/storage/repositories/prompts'
+import { generateEmbedding } from '../../memory/embeddings'
 
 /** 反馈类型 */
 export type FeedbackType = 'positive' | 'negative' | 'neutral'

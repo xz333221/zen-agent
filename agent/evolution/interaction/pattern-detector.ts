@@ -13,9 +13,12 @@
  * - 意图分类: 相同的意图类型频繁出现
  */
 
-import { generateEmbedding } from '../memory/embeddings'
-import { cosineSimilarity } from '../memory/vector-store'
-import type { PatternSignal } from '../skills/types'
+import { generateEmbedding } from '../../memory/embeddings'
+import { cosineSimilarity } from '../../utils/vector-math'
+import type { PatternSignal } from '../../skills/types'
+
+/** Embedding 生成函数签名（可注入，测试时用确定性实现替代） */
+export type EmbedFn = (text: string, signal?: AbortSignal) => Promise<number[]>
 
 /** 查询记录 */
 interface QueryRecord {
@@ -60,20 +63,26 @@ const DEFAULT_CONFIG: PatternDetectorConfig = {
   maxRecords: 200
 }
 
-// ── 查询历史记录（内存中，按会话隔离） ──
-const queryHistory: QueryRecord[] = []
-
-// ── 已检测到的模式（避免重复触发） ──
-const detectedPatterns = new Set<string>()
-
 /**
  * 模式检测器
+ *
+ * 注意：查询历史与已检测模式均为实例状态（历史上是模块级共享，
+ * 多个实例会互相污染，且无法在测试中隔离）。
  */
 export class PatternDetector {
   private config: PatternDetectorConfig
+  private embed: EmbedFn
+  /** 查询历史记录（内存中） */
+  private queryHistory: QueryRecord[] = []
+  /** 已检测到的模式（避免重复触发） */
+  private detectedPatterns = new Set<string>()
 
-  constructor(config: Partial<PatternDetectorConfig> = {}) {
+  constructor(
+    config: Partial<PatternDetectorConfig> = {},
+    embed: EmbedFn = generateEmbedding
+  ) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+    this.embed = embed
   }
 
   /**
@@ -93,9 +102,9 @@ export class PatternDetector {
     signal?: AbortSignal
   ): Promise<void> {
     try {
-      const embedding = await generateEmbedding(text, signal)
+      const embedding = await this.embed(text, signal)
 
-      queryHistory.push({
+      this.queryHistory.push({
         text,
         embedding,
         timestamp: Date.now(),
@@ -105,8 +114,8 @@ export class PatternDetector {
       })
 
       // 限制记录数量
-      if (queryHistory.length > this.config.maxRecords) {
-        queryHistory.splice(0, queryHistory.length - this.config.maxRecords)
+      if (this.queryHistory.length > this.config.maxRecords) {
+        this.queryHistory.splice(0, this.queryHistory.length - this.config.maxRecords)
       }
     } catch (err) {
       console.error('[PatternDetector] Failed to record query:', err)
@@ -122,26 +131,26 @@ export class PatternDetector {
    * @returns 检测结果
    */
   detect(): PatternDetectionResult {
-    if (queryHistory.length < this.config.threshold) {
-      return { detected: false, patterns: [], totalQueries: queryHistory.length }
+    if (this.queryHistory.length < this.config.threshold) {
+      return { detected: false, patterns: [], totalQueries: this.queryHistory.length }
     }
 
     const patterns: DetectedPattern[] = []
     const checked = new Set<string>()
 
     // 从最近的查询向前检查
-    for (let i = queryHistory.length - 1; i >= 0; i--) {
-      const current = queryHistory[i]
+    for (let i = this.queryHistory.length - 1; i >= 0; i--) {
+      const current = this.queryHistory[i]
       if (checked.has(current.text)) continue
 
       // 找到所有相似的查询
       const similar: QueryRecord[] = [current]
-      for (let j = 0; j < queryHistory.length; j++) {
-        if (i === j || checked.has(queryHistory[j].text)) continue
+      for (let j = 0; j < this.queryHistory.length; j++) {
+        if (i === j || checked.has(this.queryHistory[j].text)) continue
 
-        const sim = cosineSimilarity(current.embedding, queryHistory[j].embedding)
+        const sim = cosineSimilarity(current.embedding, this.queryHistory[j].embedding)
         if (sim >= this.config.similarityThreshold) {
-          similar.push(queryHistory[j])
+          similar.push(this.queryHistory[j])
         }
       }
 
@@ -153,9 +162,9 @@ export class PatternDetector {
       // 如果相似查询数量达到阈值，生成模式
       if (similar.length >= this.config.threshold) {
         const patternKey = this.getPatternKey(current.text)
-        if (detectedPatterns.has(patternKey)) continue
+        if (this.detectedPatterns.has(patternKey)) continue
 
-        detectedPatterns.add(patternKey)
+        this.detectedPatterns.add(patternKey)
 
         const avgSimilarity = this.calculateAvgSimilarity(similar)
         const lastSeen = Math.max(...similar.map(s => s.timestamp))
@@ -174,7 +183,7 @@ export class PatternDetector {
     return {
       detected: patterns.length > 0,
       patterns,
-      totalQueries: queryHistory.length
+      totalQueries: this.queryHistory.length
     }
   }
 
@@ -238,10 +247,10 @@ export class PatternDetector {
     detectedPatterns: number
     uniqueIntents: number
   } {
-    const intents = new Set(queryHistory.map(q => q.intent))
+    const intents = new Set(this.queryHistory.map(q => q.intent))
     return {
-      totalQueries: queryHistory.length,
-      detectedPatterns: detectedPatterns.size,
+      totalQueries: this.queryHistory.length,
+      detectedPatterns: this.detectedPatterns.size,
       uniqueIntents: intents.size
     }
   }
@@ -250,8 +259,8 @@ export class PatternDetector {
    * 清除历史记录
    */
   clear(): void {
-    queryHistory.length = 0
-    detectedPatterns.clear()
+    this.queryHistory.length = 0
+    this.detectedPatterns.clear()
   }
 }
 

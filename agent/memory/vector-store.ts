@@ -14,7 +14,11 @@
  */
 
 import { query, execute } from '../../src/main/storage/database'
+import { cosineSimilarity } from '../utils/vector-math'
 import type { EpisodicMemory, SemanticMemory } from './types'
+
+// 保持向后兼容：历史上 cosineSimilarity 从本模块导出
+export { cosineSimilarity } from '../utils/vector-math'
 
 /** 存储中的记忆行 */
 interface MemoryRow {
@@ -285,37 +289,6 @@ export function mergeMemories(keepId: string, removeId: string): void {
   )
 
   deleteMemory(removeId)
-}
-
-// ═══════════════════════════════════════════════════════════
-//  向量数学
-// ═══════════════════════════════════════════════════════════
-
-/**
- * 计算余弦相似度
- *
- * cos(A, B) = (A · B) / (|A| * |B|)
- *
- * 结果范围 [-1, 1]，1 表示方向相同（最相似）
- */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length)
-  if (len === 0) return 0
-
-  let dotProduct = 0
-  let normA = 0
-  let normB = 0
-
-  for (let i = 0; i < len; i++) {
-    dotProduct += a[i] * b[i]
-    normA += a[i] * a[i]
-    normB += b[i] * b[i]
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB)
-  if (denominator === 0) return 0
-
-  return dotProduct / denominator
 }
 
 // ═══════════════════════════════════════════════════════════

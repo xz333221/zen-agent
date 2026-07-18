@@ -17,8 +17,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve, relative, isAbsolute } from 'path'
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig } from '../providers/llm-config'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig } from '../../providers/llm-config'
 import { getFailedEvolutionRecords } from './evolution-journal'
 import type { ImprovementPoint, FileChange, SelfEvolutionConfig, ImprovementPlan } from './types'
 

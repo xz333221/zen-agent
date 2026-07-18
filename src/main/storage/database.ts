@@ -13,11 +13,11 @@ import type { Database, SqlJsStatic } from 'sql.js'
 
 // 懒加载 sql.js — 不在顶层 import，避免模块加载时初始化 WASM 运行时
 let _initSqlJs: typeof import('sql.js')['default'] | null = null
-function getInitSqlJs() {
+function getInitSqlJs(): typeof import('sql.js')['default'] {
   if (!_initSqlJs) {
     _initSqlJs = require('sql.js')
   }
-  return _initSqlJs
+  return _initSqlJs!
 }
 
 let db: Database | null = null
@@ -40,8 +40,13 @@ async function doInit(): Promise<Database> {
     // 直接读取 WASM 二进制文件，避免路径解析问题
     const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm')
     const wasmBinary = readFileSync(wasmPath)
+    // 注意 Buffer.buffer 可能是共享内存池，需按偏移精确切出独立的 ArrayBuffer
+    const wasmArrayBuffer = wasmBinary.buffer.slice(
+      wasmBinary.byteOffset,
+      wasmBinary.byteOffset + wasmBinary.byteLength
+    ) as ArrayBuffer
 
-    SQL = await getInitSqlJs()({ wasmBinary })
+    SQL = await getInitSqlJs()({ wasmBinary: wasmArrayBuffer })
 
     // 数据库文件路径
     const userDataPath = app.getPath('userData')

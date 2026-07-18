@@ -67,11 +67,12 @@ ${stepsSummary}
       { role: 'system', content: '你是反思评估助手，只返回 JSON。' },
       { role: 'user', content: prompt }
     ],
-    modelKey: config.defaultModelKey,
+    // 反思是轻量级 JSON 分类任务，优先使用 fastModel（3-4秒），fallback 到主模型
+    modelKey: config.agent.fastModel || config.defaultModelKey,
     temperature: 0.3,
     maxTokens: 500,
     signal,
-    timeoutMs: 15000
+    timeoutMs: 30000
   })
 
   const jsonMatch = response.match(/\{[\s\S]*\}/)

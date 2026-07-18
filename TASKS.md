@@ -123,9 +123,9 @@
 - **状态**: ✅ DONE
 - **描述**: 检测重复模式，自动生成可复用技能（Prompt 模板 + 工具链）。
 - **涉及文件**:
-  - 新建 `agent/evolution/pattern-detector.ts` — 模式检测（向量相似度 + 意图分类）
-  - 新建 `agent/evolution/skill-generator.ts` — 技能生成（LLM + 规则双模式）
-  - 新建 `agent/evolution/skill-store.ts` — 技能存储与匹配（向量检索 + 上下文注入）
+- 新建 `agent/evolution/interaction/pattern-detector.ts` — 模式检测（向量相似度 + 意图分类）
+- 新建 `agent/evolution/interaction/skill-generator.ts` — 技能生成（LLM + 规则双模式）
+- 新建 `agent/evolution/interaction/skill-store.ts` — 技能存储与匹配（向量检索 + 上下文注入）
   - 新建 `src/main/storage/repositories/skills.ts` — 技能 CRUD
   - `src/main/storage/database.ts` — 添加 skills 表 + 索引
   - `agent/core/agent-loop.ts` — 接入 stepSkillMatch + stepEvolution
@@ -142,8 +142,8 @@
 - **状态**: ✅ DONE
 - **描述**: 基于用户反馈（正/负反馈、修改结果）自动优化系统 Prompt。
 - **涉及文件**:
-  - 新建 `agent/evolution/prompt-optimizer.ts` — Prompt 优化器（LLM + 规则双模式）
-  - 新建 `agent/evolution/feedback-collector.ts` — 反馈收集（显式 + 隐式）
+- 新建 `agent/evolution/interaction/prompt-optimizer.ts` — Prompt 优化器（LLM + 规则双模式）
+- 新建 `agent/evolution/interaction/feedback-collector.ts` — 反馈收集（显式 + 隐式）
   - 新建 `src/main/storage/repositories/prompts.ts` — Prompt 版本管理 + 反馈记录
   - `src/main/storage/database.ts` — 添加 prompt_versions + feedback 表
   - `src/main/ipc/index.ts` — 添加 7 个新 IPC 通道

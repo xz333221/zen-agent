@@ -16,7 +16,7 @@ type MessageRole = 'system' | 'user' | 'assistant'
 /** 单条消息 */
 export interface CountableMessage {
   role: MessageRole
-  content: string
+  content: string | unknown[]
 }
 
 /** Token 计数结果 */
@@ -54,11 +54,33 @@ function isCJK(code: number): boolean {
 /**
  * 估算纯文本的 Token 数
  *
- * @param text 要计数的文本
+ * @param text 要计数的文本（容忍多模态数组和其他非字符串输入）
  * @returns 估算的 token 数
  */
-export function countTextTokens(text: string): number {
+export function countTextTokens(text: unknown): number {
   if (!text) return 0
+
+  // 防御：如果 content 不是字符串（如多模态消息的 ChatMessagePart[] 数组），
+  // 提取其中的文本部分进行计数，图片部分按固定 token 估算
+  if (typeof text !== 'string') {
+    // 多模态消息：content 是 ChatMessagePart[] 数组
+    if (Array.isArray(text)) {
+      let totalTokens = 0
+      for (const part of text) {
+        if (part && typeof part === 'object') {
+          if (part.type === 'text' && part.text) {
+            totalTokens += countTextTokens(part.text)
+          } else if (part.type === 'image_url') {
+            // 图片 token 估算：每张图约 765-1500 tokens（取决于分辨率）
+            totalTokens += 1000
+          }
+        }
+      }
+      return totalTokens
+    }
+    // 其他非字符串类型，转为字符串后计数
+    return countTextTokens(String(text))
+  }
 
   let cjkChars = 0
   let asciiChars = 0

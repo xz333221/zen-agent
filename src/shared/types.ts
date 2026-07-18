@@ -285,6 +285,8 @@ export interface AgentConfig {
   planningModel: string
   /** 快速任务用模型 */
   fastModel: string
+  /** 视觉/多模态模型 key — 处理含图片的消息时自动切换（留空则回退到 defaultModel） */
+  visionModel: string
   /** 最大上下文 Token 数 */
   maxTokens: number
   /** 输出预留 Token */
@@ -303,6 +305,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   defaultModel: '',
   planningModel: '',
   fastModel: '',
+  visionModel: '',
   maxTokens: 32000,
   outputReserve: 4000,
   recentMessageWindow: 10,

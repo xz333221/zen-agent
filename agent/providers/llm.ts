@@ -208,6 +208,10 @@ export class LLMProvider {
 
     return {
       signal: ctrl.signal,
+      abort: (reason?: string) => {
+        timedOut = true
+        ctrl.abort(new Error(reason || 'Aborted'))
+      },
       cleanup: () => {
         if (timer) clearTimeout(timer)
         if (signal) signal.removeEventListener('abort', onCallerAbort)
@@ -286,20 +290,64 @@ export class LLMProvider {
       if (request.temperature !== undefined) params.temperature = request.temperature
       if (request.maxTokens !== undefined) params.max_tokens = request.maxTokens
 
+      // 详细日志：打印每条消息的类型和大小
+      console.log(`[LLM] Messages being sent to API:`)
+      for (let i = 0; i < request.messages.length; i++) {
+        const m = request.messages[i]
+        if (typeof m.content === 'string') {
+          console.log(`[LLM]   msg[${i}] role=${m.role}, type=string, len=${m.content.length}, preview="${m.content.slice(0, 100)}..."`)
+        } else if (Array.isArray(m.content)) {
+          console.log(`[LLM]   msg[${i}] role=${m.role}, type=array, parts=${m.content.length}`)
+          for (let j = 0; j < m.content.length; j++) {
+            const part = (m.content as any[])[j]
+            if (part.type === 'text') {
+              console.log(`[LLM]     part[${j}] type=text, len=${part.text?.length || 0}`)
+            } else if (part.type === 'image_url') {
+              const url: string = part.image_url?.url || ''
+              console.log(`[LLM]     part[${j}] type=image_url, urlLen=${url.length}, prefix=${url.slice(0, 50)}...`)
+            } else {
+              console.log(`[LLM]     part[${j}] type=${part.type}`)
+            }
+          }
+        }
+      }
+
       const stream = await client.chat.completions.create(params, { signal })
+      console.log(`[LLM] Stream object created, waiting for chunks...`)
 
       let fullRaw = ''
       let chunkCount = 0
       const filter = new ThinkFilter()
 
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content || ''
-        if (!delta) continue
+      // 首 chunk 超时检测：如果 90 秒内没有收到任何 chunk，可能是 API 处理图片时卡住
+      const FIRST_CHUNK_TIMEOUT_MS = 90 * 1000
+      let firstChunkTimedOut = false
+      const firstChunkTimer = setTimeout(() => {
+        firstChunkTimedOut = true
+        const errMsg = `LLM 未收到响应数据（等待 ${FIRST_CHUNK_TIMEOUT_MS / 1000}秒），可能是图片处理超时，请重试`
+        console.error(`[LLM] ⏱ FIRST_CHUNK_TIMEOUT: ${errMsg}`)
+        timeoutCtx.abort(errMsg)
+      }, FIRST_CHUNK_TIMEOUT_MS)
+      firstChunkTimer.unref?.()
 
-        chunkCount++
-        fullRaw += delta
-        const clean = filter.feed(delta)
-        if (clean) callbacks.onChunk(clean)
+      try {
+        for await (const chunk of stream) {
+          // 收到第一个 chunk 后清除超时
+          if (firstChunkTimer) {
+            clearTimeout(firstChunkTimer)
+            console.log(`[LLM] chatStream() first chunk received after ${Date.now() - startTime}ms`)
+          }
+
+          const delta = chunk.choices[0]?.delta?.content || ''
+          if (!delta) continue
+
+          chunkCount++
+          fullRaw += delta
+          const clean = filter.feed(delta)
+          if (clean) callbacks.onChunk(clean)
+        }
+      } finally {
+        if (firstChunkTimer) clearTimeout(firstChunkTimer)
       }
 
       const final = filter.flush()

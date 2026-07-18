@@ -15,9 +15,9 @@
  * - 性能问题
  */
 
-import { llm } from '../providers/llm'
-import { isLLMConfigured, getConfig } from '../providers/llm-config'
-import { query } from '../../src/main/storage/database'
+import { llm } from '../../providers/llm'
+import { isLLMConfigured, getConfig } from '../../providers/llm-config'
+import { query } from '../../../src/main/storage/database'
 import { getFailedEvolutionRecords } from './evolution-journal'
 import type {
   LogAnalysisResult,
@@ -369,7 +369,7 @@ function analyzeWithRules(
       severity: 'high',
       description: `收到 ${negativeCount} 条负反馈，用户满意度偏低`,
       suggestedAction: '分析负反馈模式，改进对应领域的回答质量',
-      targetFiles: ['agent/evolution/prompt-optimizer.ts'],
+      targetFiles: ['agent/evolution/interaction/prompt-optimizer.ts'],
       source: '规则分析: 负反馈多'
     })
   }

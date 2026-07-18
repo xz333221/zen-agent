@@ -448,7 +448,7 @@ ${hasLocalPath ? '- 涉及本地路径的任务，描述中必须包含完整路
     userRequest: string,
     tasks: PlanTask[],
     context: { messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> }
-  ): string {
+  ): Promise<string> {
     try {
       const config = getConfig()
 
