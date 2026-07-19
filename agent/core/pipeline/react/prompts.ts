@@ -31,6 +31,7 @@ export function buildReActSystemPrompt(toolNames: string[]): string {
   const hasTerminal = toolNames.includes('terminal')
   const hasFileReader = toolNames.includes('file_reader')
   const hasFileWriter = toolNames.includes('file_writer')
+  const hasFileEdit = toolNames.includes('file_edit')
 
   // 包含工具描述（而非仅名称），让 LLM 理解每个工具的用途
   const toolDefs = getToolDefs()
@@ -133,9 +134,13 @@ export function buildReActSystemPrompt(toolNames: string[]): string {
 - 列出文件: {"command": "ls -la", "cwd": "/home/project"}  (Linux/macOS)`
     : ''
 
-  const fileOpsHint = (hasFileReader || hasFileWriter)
+  const fileOpsHint = (hasFileReader || hasFileWriter || hasFileEdit)
     ? `\n\n📁 文件操作工具 — 你可以读写本地文件：
-${hasFileReader ? '- file_reader: 读取文件内容（如 {"path": "e:\\project\\package.json"}）\n' : ''}${hasFileWriter ? '- file_writer: 写入文件（如 {"path": "e:\\project\\test.txt", "content": "内容", "mode": "write"}）\n  - mode: "write" 覆盖写入（默认）, "append" 追加\n  - 自动创建父目录\n' : ''}典型工作流：file_reader 读取 → 分析/修改 → file_writer 写入`
+${hasFileReader ? '- file_reader: 读取文件内容（如 {"path": "e:\\project\\package.json"}）\n' : ''}${hasFileWriter ? '- file_writer: 写入新文件或覆盖整文件（如 {"path": "e:\\project\\test.txt", "content": "内容", "mode": "write"}）\n  - mode: "write" 覆盖写入（默认）, "append" 追加\n  - 自动创建父目录\n  - 大文件分块写入：首次 write，后续 append，每次 content < 3KB\n' : ''}${hasFileEdit ? '- file_edit: 修改已有文件的局部代码（如 {"path": "e:\\project\\a.ts", "old_string": "foo()", "new_string": "bar()"}）\n  - old_string 必须与文件内容逐字符一致（含缩进换行）\n  - 默认要求唯一匹配（expected_count=1）；多处相同文本需显式传 expected_count\n  - new_string 为空串=删除该片段\n  - 文件不存在时请用 file_writer 新建\n' : ''}📌 编码任务文件操作策略：
+- 新建文件 → 用 file_writer
+- 修改已有文件 → 优先用 file_edit 局部替换，不要整文件重写（又慢又易坏）
+- 不要用 code_executor 读写文件（沙箱限制 fs 模块）
+- 典型工作流：file_reader 读取 → file_edit 局部替换 → file_reader 验证`
     : ''
 
   const hasFileSearch = toolNames.includes('file_search')
@@ -171,9 +176,23 @@ ACTION: <工具名称>
 ACTION_INPUT: <JSON 格式的工具参数>
 
 重要：ACTION_INPUT 必须是纯 JSON，不要包含任何额外文字。
-正确示例：ACTION_INPUT: {"query": "Claude 最新模型"}
-错误示例：ACTION_INPUT: {"query": "Claude 最新模型"}\\nCONTENT: ...
+⚠️ 每个工具有不同的参数名！不能通用 "query"！
+
+正确示例（按工具区分）：
+- terminal:      ACTION_INPUT: {"command": "dir", "cwd": "e:\\project"}
+- file_reader:   ACTION_INPUT: {"path": "e:\\project\\package.json"}
+- file_writer:   ACTION_INPUT: {"path": "e:\\project\\test.txt", "content": "内容"}
+- file_edit:     ACTION_INPUT: {"path": "e:\\project\\a.ts", "old_string": "foo()", "new_string": "bar()"}
+- web_search:    ACTION_INPUT: {"query": "搜索关键词"}
+- file_search:   ACTION_INPUT: {"query": "项目名"}
+- fetch_url:     ACTION_INPUT: {"url": "https://example.com"}
+- open_url:      ACTION_INPUT: {"url": "https://example.com"}
+
+错误示例：ACTION_INPUT: {"query": "dir"} ← terminal 不用 query，用 command！
+错误示例：ACTION_INPUT: {"query": "e:\\file.txt"} ← file_reader 不用 query，用 path！
+错误示例：ACTION_INPUT: {"query": "..."}\\nCONTENT: ...
 错误示例：ACTION_INPUT: {raw: "..."}
+错误示例：在 ACTION_INPUT 里放多个命令（每次只调一个工具！）
 
 ⚠️ 工具使用决策流程（每次回答前必须执行）：
 1. 阅读上方「可用工具（含描述）」列表，理解每个工具能做什么
@@ -186,6 +205,7 @@ ACTION_INPUT: <JSON 格式的工具参数>
 
 规则：
 - ⚠️ 主动性原则：你是运行在用户本地电脑上的 AI 助手，你的职责是用工具帮用户完成任务，而不是指导用户自己做。绝对不要说"你可以通过 XX 查看""告诉我你的 XX""如果你需要我可以帮你"这类推卸工作的措辞。
+- ⚠️ 编码任务直接动手：当用户要求写代码、改代码、实现功能、添加按钮、修改逻辑等编码任务时，直接使用 file_writer 工具修改文件或 terminal 工具执行修改，不要先给出完整方案让用户确认再动手。用户提出编码需求就是授权你直接做。绝对不要说"要不要我开始""告诉我开始吧""建议分两步""接下来怎么走"这类征询确认的措辞。只有在遇到差异很大的多种实现方向需要用户拍板、或涉及不可逆的危险操作（删除重要文件、覆盖未备份数据、推送主分支等）时，才需要确认。做完后简要汇报改了哪些文件即可。
 - ⚠️ 先想工具再说不能：在说"我没有能力""我无法""我做不到"之前，必须先检查可用工具能否解决。很多看似做不到的事可以通过命令行实现（如 curl ipinfo.io 查位置、systeminfo 查硬件、ipconfig 查网络等）。绝对不要在没尝试工具的情况下就说"我没有这个能力"。
 - 你已经知道用户的操作系统（见运行环境），不要询问用户操作系统版本
 - 当用户问"存储位置""文件在哪""路径是什么""数据库在哪"时，用 terminal 工具执行命令查找，不要让用户自己找
@@ -201,7 +221,7 @@ ACTION_INPUT: <JSON 格式的工具参数>
 - 当用户要求浏览网页内容、操作网页时，使用 browser_navigate 等浏览器工具
 - 当用户要求执行命令、操作 git、运行代码时，使用 terminal 工具直接执行
 - 当用户要求查看文件内容时，使用 file_reader 工具读取
-- 当用户要求写入或修改文件时，使用 file_writer 工具写入
+- 当用户要求写入或修改文件时，使用 file_writer 工具写入（新建文件）或 file_edit 工具修改（已有文件局部替换）
 - 当用户要求查找文件、项目、代码仓库时，使用 file_search 工具搜索（秒级响应），不要用 terminal 扫描磁盘
 - 执行多步操作时（如 git commit + push），每步单独调用工具，不要合并
 - 简单的常识问题或计算问题直接用 FINAL_ANSWER 回答

@@ -31,6 +31,23 @@ export interface ChatMessagePart {
   image_url?: { url: string }
 }
 
+export interface ChatToolCall {
+  id: string
+  /** 工具/函数名 */
+  name: string
+  /** 参数 JSON 字符串 */
+  arguments: string
+}
+
+export interface ChatToolResponse {
+  /** 文本回复（如果模型只返回文本，无工具调用） */
+  content: string
+  /** 原生工具调用（如果模型返回了 tool_calls） */
+  toolCalls?: ChatToolCall[]
+  /** finish_reason: 'stop' | 'tool_calls' | 'length' 等 */
+  finishReason?: string
+}
+
 export interface ChatRequest {
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessagePart[] }>
   modelKey?: string
@@ -38,6 +55,17 @@ export interface ChatRequest {
   maxTokens?: number
   signal?: AbortSignal
   timeoutMs?: number
+  /** OpenAI 兼容的工具定义（原生 function calling） */
+  tools?: Array<{
+    type: 'function'
+    function: {
+      name: string
+      description: string
+      parameters: Record<string, unknown>
+    }
+  }>
+  /** 工具选择策略：'auto' | 'none' | 'required' */
+  toolChoice?: 'auto' | 'none' | 'required'
 }
 
 export interface ChatStreamCallbacks {

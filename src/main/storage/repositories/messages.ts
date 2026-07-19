@@ -13,6 +13,7 @@ interface MessageRow {
   content: string
   timestamp: number
   trace: string | null
+  images: string | null
 }
 
 /** 添加消息 */
@@ -21,15 +22,16 @@ export function addMessage(
   message: ChatMessage
 ): void {
   execute(
-    `INSERT INTO messages (id, session_id, role, content, timestamp, trace)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (id, session_id, role, content, timestamp, trace, images)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       message.id,
       sessionId,
       message.role,
       message.content,
       message.timestamp,
-      message.trace ? JSON.stringify(message.trace) : null
+      message.trace ? JSON.stringify(message.trace) : null,
+      message.images && message.images.length > 0 ? JSON.stringify(message.images) : null
     ]
   )
   incrementMessageCount(sessionId)
@@ -60,11 +62,21 @@ export function deleteMessages(sessionId: string): void {
 
 /** 行转对象 */
 function rowToMessage(row: MessageRow): ChatMessage {
+  let images: ChatMessage['images']
+  if (row.images) {
+    try {
+      images = JSON.parse(row.images)
+    } catch (err) {
+      console.warn('[Messages] Failed to parse images JSON:', err)
+      images = undefined
+    }
+  }
   return {
     id: row.id,
     role: row.role as ChatMessage['role'],
     content: row.content,
     timestamp: row.timestamp,
-    trace: row.trace ? JSON.parse(row.trace) : undefined
+    trace: row.trace ? JSON.parse(row.trace) : undefined,
+    images
   }
 }

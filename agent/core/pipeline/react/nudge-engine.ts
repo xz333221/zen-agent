@@ -14,9 +14,11 @@
  *  5   声称"我不能/没有能力"但实际有工具可用
  *  6   FINAL_ANSWER 但无 CONTENT（模型放弃或格式错误）
  *  7   只输出 THOUGHT 没有 ACTION（格式不完整）
+ *  8   工具因参数名错误而失败（如用 query 代替 command/path）
  */
 
 import { getToolDefs } from '../../action-executor'
+import { getToolParamExample } from '../../../tools/param-examples'
 import type { ReActStep } from '../../types'
 import type { AnyMessage } from '../../../utils/multimodal'
 import type { ParsedReActResponse } from './react-parser'
@@ -38,7 +40,7 @@ export interface NudgeInput {
 /** 纠偏触发结果 */
 export interface NudgeFired {
   /** 机制标识（用于日志） */
-  kind: 'nudge1' | 'nudge15' | 'nudge2' | 'nudge3' | 'nudge4' | 'nudge5' | 'nudge6' | 'nudge7'
+  kind: 'nudge1' | 'nudge15' | 'nudge2' | 'nudge3' | 'nudge4' | 'nudge5' | 'nudge6' | 'nudge7' | 'nudge8' | 'nudge9' | 'nudge10'
   /** 注入给模型的系统提醒（作为 observation） */
   observation: string
   /** Think 步骤重命名标签 */
@@ -59,7 +61,10 @@ export class NudgeEngine {
     nudge4: 0,
     nudge5: 0,
     nudge6: 0,
-    nudge7: 0
+    nudge7: 0,
+    nudge8: 0,
+    nudge9: 0,
+    nudge10: 0
   }
 
   private readonly NUDGE_MAX = 2
@@ -123,6 +128,7 @@ CONTENT: <给用户的回答内容>${toolHint}
       ?? this.checkDistrust(input)
       ?? this.checkInsufficientSearch(input)
       ?? this.checkLazyAnswer(input)
+      ?? this.checkAskForConfirmation(input)
       ?? this.checkGiveUp(input)
       ?? this.checkEmptyContent(input)
   }
@@ -392,6 +398,92 @@ CONTENT: <给用户的回答内容>${toolHint}
   }
 
   /**
+   * 纠偏机制 9：征询确认而非直接动手（编码任务的"方案确认"陷阱）
+   *
+   * 与 nudge4 的区别：nudge4 处理"没用过工具就把工作推给用户"（要求 hasNotUsedTools），
+   * 而本机制处理"已经用工具探索过项目，却给出完整方案让用户确认再动手"。
+   * 这种情况 nudge4 不会触发（因为已用过工具），但本质上仍是把本可自己完成的
+   * 编码动作推给了用户。
+   *
+   * 典型表现：
+   *  - "要不要我现在就开始动手？"
+   *  - "告诉我「开始吧」我就直接改"
+   *  - "建议分两步：先做后端，再做前端"
+   *  - "接下来怎么走？"
+   *
+   * 触发条件：命中征询措辞 + 有可用工具（尤其 file_writer）+ 未达上限。
+   * 不要求"没用过工具"——即使已探索过项目，只要还在征询确认而非动手，就纠偏。
+   */
+  private checkAskForConfirmation(input: NudgeInput): NudgeFired | null {
+    const { parsed, iteration, thinkResponse, toolNames } = input
+
+    // 征询确认再动手的措辞模式
+    const askConfirmPatterns = [
+      // 直接征询"要不要/需不需要我开始"
+      '要不要我现在', '要不要我开始', '要不要我直接', '要不要我动手',
+      '需要我开始', '需要我直接', '需要我动手', '是否开始',
+      '是否需要我', '是否要我', '要不要我',
+      // "告诉我开始吧 / 告诉我「"
+      '告诉我「', '告诉我开始', '告诉我「开始',
+      // "我就直接改/动手"（暗示在等指令）
+      '我就直接改', '我就开始', '我就动手', '我就直接动手',
+      // 分步征询
+      '建议分两步', '先做后端', '先做前端', '先动后端', '先动前端',
+      '先改后端', '先改前端', '先做后端再', '先做前端再',
+      // "接下来怎么走"
+      '接下来怎么走', '接下来怎么做', '接下来如何',
+      // 等待用户确认信号
+      '确认后我就', '你说一声我就', '等你说', '等你确认',
+      // "可以开始吗 / 行吗"
+      '可以开始吗', '可以动手吗', '可以吗？',
+    ]
+    const answerText = (parsed.actionInput || parsed.content || thinkResponse || '').toLowerCase()
+    const hasAskConfirm = askConfirmPatterns.some(p => answerText.includes(p))
+    const hasTools = toolNames.length > 0
+
+    if (!hasAskConfirm || !hasTools) return null
+    if (this.counts.nudge9 >= this.NUDGE_MAX) return null
+    if (iteration >= input.maxIterations - 2) return null
+
+    // 如果有 file_writer 工具，说明模型完全有能力直接写代码
+    const hasFileWriter = toolNames.includes('file_writer')
+    // 如果有 terminal 工具，也能执行命令式修改
+    const hasTerminal = toolNames.includes('terminal')
+
+    this.counts.nudge9++
+
+    const toolHint = hasFileWriter
+      ? `你有 file_writer 工具，可以直接写入/修改文件（参数: {"path": "...", "content": "...", "mode": "write"/"append"}）。`
+      : hasTerminal
+        ? `你有 terminal 工具，可以直接执行命令修改文件（如用 powershell 写入、用 git apply 打补丁等）。`
+        : `你有 ${toolNames.join(', ')} 等工具，请直接用工具完成任务。`
+
+    return {
+      kind: 'nudge9',
+      count: this.counts.nudge9,
+      max: this.NUDGE_MAX,
+      stepLabel: 'Think (已驳回，不要征询确认，直接动手)',
+      observation: `[系统提醒] 你的回答中包含"要不要我开始""告诉我开始吧""建议分两步"等征询确认的措辞，把本可以自己完成的动作推给了用户。这不允许！
+
+⚠️ 核心原则（编码任务）：用户让你写代码/改代码/实现功能，就是授权你直接动手。你不应该先给出完整方案让用户确认再动手，而应该直接用工具完成修改。
+
+具体要求：
+1. ${toolHint}
+2. 对于编码任务，直接用 file_writer 写入修改后的文件内容，或用 terminal 执行修改命令
+3. 不要说"要不要我开始""告诉我开始吧""建议分两步""接下来怎么走" — 直接做
+4. 只有在以下情况才需要征询用户：
+   - 存在多个差异很大、影响重大的实现方向需要用户拍板
+   - 涉及不可逆的危险操作（如删除重要文件、覆盖未备份的数据、推送到远程主分支等）
+   - 用户的需求本身存在歧义，无法合理推断
+5. 除此之外，能自己做的就直接做完，做完后简要汇报改了什么即可
+
+请重新思考：用户让你做什么？你现在掌握的信息是否足够直接动手？如果足够，直接使用工具修改文件；如果确实缺信息，用工具去获取（读文件、执行命令），而不是问用户。
+
+请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复，使用 file_writer 等工具直接动手。`
+    }
+  }
+
+  /**
    * 纠偏机制 5：声称"我不能/没有能力"但实际有工具可用
    *
    * LLM 没有使用工具就回答，且回答中包含"我没有能力""我无法""我做不到"等放弃措辞。
@@ -493,6 +585,110 @@ CONTENT: （给用户的实际回答，必须有实质内容，不能为空）
 THOUGHT: 我需要继续获取...
 ACTION: web_search
 ACTION_INPUT: {"query": "..."}`
+    }
+  }
+
+  /**
+   * 纠偏机制 8：工具因参数名错误而失败
+   *
+   * 检测上一步工具执行失败且错误信息含"缺少XX参数"/"XX parameter is required"，
+   * 说明模型用了错误的参数名（如对 terminal 用 query 而非 command）。
+   * 注入纠偏提醒，告知正确参数名和示例。
+   *
+   * @param stepsToScan 可选：要扫描的步骤集合（多 tool_calls 批量执行后传入
+   *                    本批新产生的 steps）；缺省只检查 reactSteps 最后一条
+   */
+  checkWrongParams(input: NudgeInput, stepsToScan?: ReActStep[]): NudgeFired | null {
+    const { reactSteps, iteration, maxIterations } = input
+
+    // 检测参数错误模式
+    const paramErrorPatterns = [
+      /缺少\S*参数/,
+      /parameter is required/i,
+      /missing.*parameter/i,
+    ]
+
+    // 批量执行时扫描本批所有 steps，找第一条参数错误者；缺省只看最后一条
+    const candidates = stepsToScan && stepsToScan.length > 0
+      ? stepsToScan
+      : reactSteps.slice(-1)
+
+    const failedStep = candidates.find(s =>
+      s.action !== 'FINAL_ANSWER' &&
+      s.action !== 'DIRECT_ANSWER' &&
+      paramErrorPatterns.some(re => re.test(s.observation || ''))
+    )
+    if (!failedStep) return null
+
+    if (this.counts.nudge8 >= this.NUDGE_MAX) return null
+    if (iteration >= maxIterations - 2) return null
+
+    this.counts.nudge8++
+
+    // 构建该工具的正确参数提示
+    const toolDefs = getToolDefs()
+    const toolDef = toolDefs.find(t => t.id === failedStep.action)
+    let paramHint = ''
+    if (toolDef) {
+      const params = Object.entries(toolDef.schema.properties)
+        .map(([name, prop]) => {
+          const req = toolDef.schema.required.includes(name) ? '必填' : '可选'
+          return `  ${name} (${prop.type}, ${req}): ${prop.description}`
+        })
+        .join('\n')
+      paramHint = `\n\n工具 ${failedStep.action} 的正确参数：\n${params}\n\n正确示例：`
+
+      // 共享示例表（与 param-normalizer 的 hint 同一数据源）
+      const example = getToolParamExample(failedStep.action)
+      if (example) {
+        paramHint += `\n${example}`
+      }
+    }
+
+    return {
+      kind: 'nudge8',
+      count: this.counts.nudge8,
+      max: this.NUDGE_MAX,
+      stepLabel: 'Think (已驳回，参数名错误)',
+      observation: `[系统提醒] 上一步工具 ${failedStep.action} 执行失败，原因是你用了错误的参数名。${paramHint}
+
+⚠️ 重要：每个工具有不同的参数名，不能通用 "query"！
+- terminal 用 "command"（不是 query）
+- file_reader 用 "path"（不是 query）
+- web_search / file_search 用 "query"
+
+请重新调用 ${failedStep.action} 工具，使用正确的参数名。`
+    }
+  }
+
+  /**
+   * 纠偏机制 10：模型调用了不存在的工具名
+   *
+   * 文本 ReAct 协议下模型可能幻觉出工具名（如 file_write / read_file）。
+   * 旧行为是把 thought 当作最终回答输出并结束循环 —— 对编码任务是灾难。
+   * 改为注入纠偏提醒，让模型用正确的工具名重试。
+   */
+  checkUnknownTool(
+    action: string,
+    iteration: number,
+    maxIterations: number,
+    toolNames: string[]
+  ): NudgeFired | null {
+    if (this.counts.nudge10 >= this.NUDGE_MAX) return null
+    if (iteration >= maxIterations - 2) return null
+
+    this.counts.nudge10++
+
+    return {
+      kind: 'nudge10',
+      count: this.counts.nudge10,
+      max: this.NUDGE_MAX,
+      stepLabel: 'Think (已驳回，工具名不存在)',
+      observation: `[系统提醒] 你尝试调用工具 "${action}"，但它不存在。可用工具只有：${toolNames.join(', ')}。
+
+请从可用工具列表中选择正确的工具名重新调用；如果现有工具确实都无法完成任务，再用 FINAL_ANSWER 回答（并说明限制）。
+
+请按照 THOUGHT/ACTION/ACTION_INPUT 格式回复。`
     }
   }
 

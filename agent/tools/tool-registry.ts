@@ -9,6 +9,7 @@ import { registerTool } from '../core/action-executor'
 import { calculator } from './calculator'
 import { fileReader } from './file-reader'
 import { fileWriter } from './file-writer'
+import { fileEditor } from './file-edit'
 import { codeExecutor } from './code-executor'
 import { webSearch } from './web-search'
 import { fetchUrl } from './fetch-url'
@@ -24,6 +25,7 @@ const builtinTools: ToolExecutor[] = [
   calculator,
   fileReader,
   fileWriter,
+  fileEditor,
   codeExecutor,
   webSearch,
   fetchUrl,

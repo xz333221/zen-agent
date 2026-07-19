@@ -151,9 +151,13 @@ function runMigrations(database: Database): void {
       content TEXT NOT NULL,
       timestamp INTEGER NOT NULL,
       trace TEXT,
+      images TEXT,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     )
   `)
+
+  // ── 迁移:为旧库补 images 列(图片附件持久化) ──
+  addColumnIfMissing(database, 'messages', 'images', 'TEXT')
 
   database.run(`
     CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -312,6 +316,26 @@ function runMigrations(database: Database): void {
   `)
 
   scheduleSave()
+}
+
+/**
+ * 轻量迁移工具：为已存在的表添加列（若列不存在）。
+ * SQLite 不支持 IF NOT EXISTS 形式的 ADD COLUMN，用 pragma 探测。
+ */
+function addColumnIfMissing(database: Database, table: string, column: string, definition: string): void {
+  try {
+    // PRAGMA table_info 返回行: [cid, name, type, notnull, dflt_value, pk]
+    // sql.js 的 exec() 返回 [{ columns, values }]，values 是数据行数组
+    const info = database.exec(`PRAGMA table_info(${table})`)
+    const rows = info[0]?.values ?? []
+    const exists = rows.some((row: any) => row[1] === column)
+    if (!exists) {
+      database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+      console.log(`[DB] Migration: added column ${table}.${column}`)
+    }
+  } catch (err) {
+    console.error(`[DB] Migration failed for ${table}.${column}:`, err)
+  }
 }
 
 /** 执行查询（返回行数组） */

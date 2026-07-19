@@ -11,6 +11,7 @@
 import { writeFileSync, appendFileSync, mkdirSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
 import type { ToolDef, ToolExecutor, ToolResult } from './types'
+import { checkProtectedPath } from './path-guard'
 
 const FILE_WRITER_DEF: ToolDef = {
   id: 'file_writer',
@@ -43,24 +44,40 @@ const FILE_WRITER_DEF: ToolDef = {
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
 
-// 禁止写入的系统路径模式（防止破坏系统文件）
-const PROTECTED_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /^\/etc\//, reason: '系统配置目录 /etc' },
-  { pattern: /^\/boot\//, reason: '系统启动目录 /boot' },
-  { pattern: /^\/dev\//, reason: '设备文件目录 /dev' },
-  { pattern: /^\/proc\//, reason: '进程信息目录 /proc' },
-  { pattern: /^\/sys\//, reason: '内核 sysfs 目录 /sys' },
-  { pattern: /^C:\\Windows\\/i, reason: 'Windows 系统目录' },
-  { pattern: /^C:\\Program Files\\/i, reason: 'Program Files 目录' },
-]
-
 export const fileWriter: ToolExecutor = {
   def: FILE_WRITER_DEF,
   async execute(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const startTime = Date.now()
+
+    // ── 防御：参数类型损坏时拒绝执行（正常路径下 action-executor 的
+    // normalizeParams 已拦截，这里防未来有直接调用 executor 的新调用方）──
+    if (typeof params.content === 'object' && params.content !== null) {
+      return {
+        callId: `file-w-${Date.now()}`,
+        success: false,
+        result: null,
+        resultType: 'error',
+        resultSummary: '缺少必填参数 "content"（收到的是对象而非字符串）。请直接传字符串内容，不要传 {"text": "..."} 之类的包装对象。',
+        duration: Date.now() - startTime,
+        error: 'content parameter must be a string, got object'
+      }
+    }
+
     const filePath = String(params.path || '')
     const content = String(params.content ?? '')
     const mode = params.mode === 'append' ? 'append' : 'write'
+
+    if (content === '[object Object]') {
+      return {
+        callId: `file-w-${Date.now()}`,
+        success: false,
+        result: null,
+        resultType: 'error',
+        resultSummary: '缺少必填参数 "content"（内容为 "[object Object]"，说明参数序列化已损坏）。请重新以字符串形式传入文件内容。',
+        duration: Date.now() - startTime,
+        error: 'content corrupted to [object Object]'
+      }
+    }
 
     if (!filePath) {
       return {
@@ -89,18 +106,17 @@ export const fileWriter: ToolExecutor = {
     try {
       const absPath = resolve(filePath)
 
-      // 检查是否为受保护的系统路径
-      for (const { pattern, reason } of PROTECTED_PATH_PATTERNS) {
-        if (pattern.test(absPath)) {
-          return {
-            callId: `file-w-${Date.now()}`,
-            success: false,
-            result: null,
-            resultType: 'error',
-            resultSummary: `禁止写入受保护路径: ${reason}`,
-            duration: Date.now() - startTime,
-            error: `Protected path: ${reason}`
-          }
+      // 检查是否为受保护的系统路径（共享 path-guard）
+      const protectedReason = checkProtectedPath(absPath)
+      if (protectedReason) {
+        return {
+          callId: `file-w-${Date.now()}`,
+          success: false,
+          result: null,
+          resultType: 'error',
+          resultSummary: `禁止写入受保护路径: ${protectedReason}`,
+          duration: Date.now() - startTime,
+          error: `Protected path: ${protectedReason}`
         }
       }
 

@@ -7,6 +7,7 @@
 
 import { llm } from '../providers/llm'
 import { isLLMConfigured, getConfig } from '../providers/llm-config'
+import { parseToolParams } from './pipeline/react/react-parser'
 import type { SubAgentDef, TaskResult, PlanTask, Blackboard, AgentMessage } from './types'
 import type { TraceStep } from '../../src/shared/types'
 import { countTextTokens } from '../utils/token-counter'
@@ -30,7 +31,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 当用户要求 git 操作（提交、推送、拉取）时，直接用 terminal 工具执行，不要让用户自己操作
 - 当需要操作浏览器时，使用 browser_navigate、browser_get_text、browser_click、browser_type、browser_screenshot 等工具
 - 不要说"我无法执行命令"——你有 terminal 工具，直接用`,
-    tools: ['code_executor', 'terminal', 'file_reader', 'file_writer', 'file_search', 'web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
+    tools: ['code_executor', 'terminal', 'file_reader', 'file_writer', 'file_edit', 'file_search', 'web_search', 'fetch_url', 'open_url', 'browser_navigate', 'browser_get_text', 'browser_click', 'browser_type', 'browser_screenshot', 'browser_eval', 'browser_scroll', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 8000,
@@ -75,7 +76,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 适应不同场景的写作风格
 - 注重可读性和表达力
 - 保持一致的语调和风格`,
-    tools: ['file_reader', 'file_writer', 'web_search', 'fetch_url'],
+    tools: ['file_reader', 'file_writer', 'file_edit', 'web_search', 'fetch_url'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -121,7 +122,7 @@ const BUILTIN_AGENTS: SubAgentDef[] = [
 - 当用户要求执行命令、git 操作、查看文件时，直接用对应的工具完成，不要让用户自己做
 - 当需要打开网页或操作浏览器时，使用 open_url 或 browser_navigate 等工具
 - 不要说"我没有这个能力"——先检查你的工具能否解决`,
-    tools: ['web_search', 'fetch_url', 'open_url', 'terminal', 'file_reader', 'file_writer', 'file_search', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
+    tools: ['web_search', 'fetch_url', 'open_url', 'terminal', 'file_reader', 'file_writer', 'file_edit', 'file_search', 'browser_navigate', 'browser_get_text', 'browser_screenshot', 'browser_close'],
     defaultModel: '',
     memoryScope: 'shared',
     maxTokens: 6000,
@@ -272,6 +273,8 @@ CONTENT: <回答>
 重要规则：
 - 仔细阅读每个工具的参数定义，使用正确的参数名
 - 涉及本地路径的任务：使用 terminal 工具执行 dir/ls 命令查看目录，使用 file_reader 读取文件（参数名是 path）
+- 新建文件用 file_writer；修改已有文件优先用 file_edit 局部替换（参数: path, old_string, new_string），不要整文件重写
+- 不要用 code_executor 读写文件（沙箱限制 fs 模块，会报错）
 - 浏览器任务典型流程: browser_navigate → browser_get_text/browser_screenshot → browser_click/browser_type → ... → browser_close
 - 每次只调用一个工具，等待结果后再决定下一步
 - 完成所有步骤后，使用 FINAL_ANSWER 给出总结`
@@ -326,21 +329,10 @@ CONTENT: <回答>
 
       // 执行工具
       const actionInputMatch = response.match(/ACTION_INPUT:\s*([\s\S]*?)(?=\nTHOUGHT:|$)/i)
-      let toolParams: Record<string, unknown> = {}
-      try {
-        toolParams = actionInputMatch ? JSON.parse(actionInputMatch[1].trim()) : {}
-      } catch {
-        const jsonMatch = actionInputMatch?.[1]?.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          try {
-            toolParams = JSON.parse(jsonMatch[0])
-          } catch {
-            toolParams = { raw: actionInputMatch?.[1]?.trim() || '' }
-          }
-        } else {
-          toolParams = { raw: actionInputMatch?.[1]?.trim() || '' }
-        }
-      }
+      // 使用 parseToolParams（含 context-aware fallback + 参数名自动映射）
+      const toolParams = actionInputMatch
+        ? parseToolParams(actionInputMatch[1].trim(), action)
+        : {}
 
       const toolResult = await executeAction({
         id: `subcall-${Date.now()}-${step}`,

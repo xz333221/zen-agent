@@ -130,9 +130,35 @@ export const terminal: ToolExecutor = {
   def: TERMINAL_DEF,
   async execute(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const startTime = Date.now()
+
+    // ── 防御：参数类型损坏时拒绝执行（normalizeParams 之外的兜底）──
+    if (typeof params.command === 'object' && params.command !== null) {
+      return {
+        callId: `term-${Date.now()}`,
+        success: false,
+        result: null,
+        resultType: 'error',
+        resultSummary: '缺少必填参数 "command"（收到的是对象而非字符串）。请直接传字符串命令，如 {"command": "dir"}。',
+        duration: Date.now() - startTime,
+        error: 'command parameter must be a string, got object'
+      }
+    }
+
     const command = String(params.command || '').trim()
     const cwd = params.cwd ? String(params.cwd) : ''
     const timeoutMs = Number(params.timeout) || 30000
+
+    if (command === '[object Object]') {
+      return {
+        callId: `term-${Date.now()}`,
+        success: false,
+        result: null,
+        resultType: 'error',
+        resultSummary: '缺少必填参数 "command"（命令为 "[object Object]"，说明参数序列化已损坏）。请重新以字符串形式传入命令。',
+        duration: Date.now() - startTime,
+        error: 'command corrupted to [object Object]'
+      }
+    }
 
     if (!command) {
       return {

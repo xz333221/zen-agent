@@ -13,7 +13,7 @@ import type { ToolDef, ToolExecutor, ToolResult } from './types'
 const CODE_EXECUTOR_DEF: ToolDef = {
   id: 'code_executor',
   name: 'CodeExecutor',
-  description: '执行 JavaScript 代码并返回结果。支持 console.log 输出和返回值。参数: code (JS 代码), timeout (超时毫秒, 可选)',
+  description: '执行 JavaScript 代码并返回结果（沙箱环境，禁止 fs/require/process/child_process/http 等模块）。支持 console.log 输出和返回值。参数: code (JS 代码), timeout (超时毫秒, 可选)。⚠️ 不能用于读写文件——请用 file_writer/file_edit；不能执行系统命令——请用 terminal。',
   category: 'builtin',
   schema: {
     type: 'object',
@@ -93,27 +93,30 @@ async function executeInSandbox(code: string, timeoutMs: number): Promise<ExecRe
   }
 
   try {
-    // 检查危险代码
-    const dangerousPatterns = [
-      /require\s*\(/,
-      /import\s+/,
-      /process\./,
-      /child_process/,
-      /execSync/,
-      /spawnSync/,
-      /__dirname/,
-      /__filename/,
-      /fs\./,
-      /net\./,
-      /http\./,
-      /https\./,
-      /crypto\./,
-      /os\./
+    // 检查危险代码并按类别给出指引
+    const dangerousChecks: Array<{ pattern: RegExp; hint: string }> = [
+      // 系统命令执行类
+      { pattern: /require\s*\(/, hint: '沙箱禁止 require()。执行系统命令请用 terminal 工具（如 terminal {"command": "..."}）' },
+      { pattern: /import\s+/, hint: '沙箱禁止 import。执行系统命令请用 terminal 工具' },
+      { pattern: /child_process/, hint: '沙箱禁止 child_process。执行系统命令请用 terminal 工具' },
+      { pattern: /execSync/, hint: '沙箱禁止 execSync。执行系统命令请用 terminal 工具' },
+      { pattern: /spawnSync/, hint: '沙箱禁止 spawnSync。执行系统命令请用 terminal 工具' },
+      // 文件系统类
+      { pattern: /fs\./, hint: '沙箱禁止 fs 模块。读写文件请用 file_writer/file_edit/file_reader 工具' },
+      { pattern: /__dirname/, hint: '沙箱禁止 __dirname。读写文件请用 file_reader/file_writer/file_edit 工具' },
+      { pattern: /__filename/, hint: '沙箱禁止 __filename。读写文件请用 file_reader/file_writer/file_edit 工具' },
+      // 网络/进程类
+      { pattern: /process\./, hint: '沙箱禁止 process 对象。获取网络信息请用 terminal 执行 curl，或用 fetch_url/web_search' },
+      { pattern: /net\./, hint: '沙箱禁止 net 模块。获取网络信息请用 terminal 执行 curl，或用 fetch_url/web_search' },
+      { pattern: /http\./, hint: '沙箱禁止 http 模块。抓取网页请用 fetch_url 工具' },
+      { pattern: /https\./, hint: '沙箱禁止 https 模块。抓取网页请用 fetch_url 工具' },
+      { pattern: /crypto\./, hint: '沙箱禁止 crypto 模块' },
+      { pattern: /os\./, hint: '沙箱禁止 os 模块。查看系统信息请用 terminal 执行 systeminfo 等命令' },
     ]
 
-    for (const pattern of dangerousPatterns) {
+    for (const { pattern, hint } of dangerousChecks) {
       if (pattern.test(code)) {
-        throw new Error(`代码包含不允许的操作: ${pattern.source}`)
+        throw new Error(`代码包含不允许的操作: ${pattern.source}。${hint}`)
       }
     }
 

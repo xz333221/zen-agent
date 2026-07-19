@@ -8,7 +8,7 @@
  */
 
 import OpenAI, { toFile } from 'openai'
-import type { LLMConfig, ProviderEntry, ModelKey, ChatRequest, ChatStreamCallbacks } from './types'
+import type { LLMConfig, ProviderEntry, ModelKey, ChatRequest, ChatStreamCallbacks, ChatToolResponse } from './types'
 
 // ── 默认超时: 8 分钟 ──
 const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000
@@ -129,6 +129,11 @@ export class LLMProvider {
   private providers = new Map<string, ProviderEntry>()
   private clientCache = new Map<string, OpenAI>()
   private defaultModelKey: ModelKey = ''
+  /**
+   * 已确认不支持原生 function calling 的模型（key = baseURL::model）
+   * 命中后 ReAct 循环直接走文本协议，不再每轮白调一次 chatWithTools
+   */
+  private toolsUnsupported = new Set<string>()
 
   /** 注册 provider */
   registerProvider(entry: ProviderEntry): void {
@@ -136,6 +141,34 @@ export class LLMProvider {
     // 清除对应的客户端缓存
     const cacheKey = `${entry.baseURL}::${entry.apiKey}`
     this.clientCache.delete(cacheKey)
+    // provider 配置变更（可能换了支持 tools 的网关），重置 tools 支持性缓存
+    this.toolsUnsupported.clear()
+  }
+
+  /** 该模型是否已被确认不支持原生 function calling */
+  isToolsUnsupported(modelKey?: string): boolean {
+    try {
+      const cfg = this.resolveModel(modelKey)
+      return this.toolsUnsupported.has(`${cfg.baseURL}::${cfg.model}`)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 根据错误判定是否"模型/API 不支持 tools"（是则缓存，避免每轮重试）
+   * 只缓存明确的服务端拒绝：400/404/422 且报错信息提及 tool/function。
+   * 超时、abort、429、5xx、网络错误都是临时问题，不缓存。
+   */
+  private markToolsUnsupportedIfDefinitive(cfg: LLMConfig, err: unknown, isTimedOut: boolean, callerAborted: boolean): void {
+    if (isTimedOut || callerAborted) return
+    const e = err as { status?: number; message?: string }
+    const status = e?.status
+    const message = e?.message || ''
+    if (status !== undefined && [400, 404, 422].includes(status) && /tool|function/i.test(message)) {
+      console.warn(`[LLM] model ${cfg.model} does not support native tools (status=${status}), caching as unsupported`)
+      this.toolsUnsupported.add(`${cfg.baseURL}::${cfg.model}`)
+    }
   }
 
   /** 设置默认模型 */
@@ -217,6 +250,80 @@ export class LLMProvider {
         if (signal) signal.removeEventListener('abort', onCallerAbort)
       },
       isTimedOut: () => timedOut,
+    }
+  }
+
+  /**
+   * 原生 function calling 对话
+   *
+   * 返回 ChatToolResponse，包含文本内容和/或原生 tool_calls。
+   * 支持 OpenAI 兼容 API 的模型（如 MiniMax-M3、GPT-4o、Claude 等）可直接使用此方法，
+   * 无需依赖文本 ReAct 格式解析，参数名准确率大幅提升。
+   */
+  async chatWithTools(request: ChatRequest): Promise<ChatToolResponse> {
+    const cfg = this.resolveModel(request.modelKey)
+    const client = this.getClient(cfg.apiKey, cfg.baseURL)
+    const timeoutCtx = this.withTimeout(request.signal, request.timeoutMs)
+    const signal = timeoutCtx.signal
+    const cleanup = timeoutCtx.cleanup
+
+    const startTime = Date.now()
+    const msgCount = request.messages.length
+    const hasTools = (request.tools?.length ?? 0) > 0
+    const timeoutStr = request.timeoutMs ? `${request.timeoutMs / 1000}s` : '8min(default)'
+    console.log(`[LLM] chatWithTools() → model=${cfg.model}, msgs=${msgCount}, tools=${request.tools?.length ?? 0}, timeout=${timeoutStr}`)
+
+    try {
+      const params: OpenAI.Chat.ChatCompletionCreateParams = {
+        model: cfg.model,
+        messages: request.messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content : m.content as any
+        })) as any,
+      }
+      if (request.temperature !== undefined) params.temperature = request.temperature
+      if (request.maxTokens !== undefined) params.max_tokens = request.maxTokens
+      if (hasTools) {
+        params.tools = request.tools as any
+        params.tool_choice = request.toolChoice ?? 'auto'
+      }
+
+      const response = await client.chat.completions.create(params, { signal })
+      const choice = response.choices[0]
+      const message = choice?.message
+
+      const rawContent = message?.content || ''
+      const content = cleanThinkTags(rawContent) || rawContent.trim()
+
+      // 提取原生 tool_calls
+      const toolCalls = message?.tool_calls?.map(tc => ({
+        id: tc.id,
+        name: tc.function?.name || '',
+        arguments: tc.function?.arguments || ''
+      })) ?? []
+
+      const finishReason = choice?.finish_reason || ''
+      const elapsed = Date.now() - startTime
+      console.log(`[LLM] chatWithTools() ✓ ${elapsed}ms, content=${content.length}chars, toolCalls=${toolCalls.length}, finish=${finishReason}`)
+
+      return {
+        content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        finishReason
+      }
+    } catch (err) {
+      const elapsed = Date.now() - startTime
+      const error = err as Error
+      const isTimeout = timeoutCtx.isTimedOut?.() ?? false
+      console.error(`[LLM] chatWithTools() ✗ ${elapsed}ms, timeout=${isTimeout}, error:`, error?.message || error)
+      if (error?.stack) {
+        console.error('[LLM] chatWithTools() stack:', error.stack.split('\n').slice(0, 5).join('\n'))
+      }
+      // 明确的"不支持 tools"错误记入缓存，后续轮次直接走文本协议
+      this.markToolsUnsupportedIfDefinitive(cfg, err, isTimeout, request.signal?.aborted ?? false)
+      throw err
+    } finally {
+      cleanup?.()
     }
   }
 

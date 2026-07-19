@@ -7,6 +7,7 @@
  */
 
 import type { ToolDef, ToolExecutor, ToolCall, ToolResult } from '../tools/types'
+import { normalizeParams } from '../tools/param-normalizer'
 import type { ActDetail } from '../../src/shared/types'
 
 // ── 工具注册表 ──
@@ -47,6 +48,24 @@ export async function executeAction(
       error: `Tool not found: ${call.toolId}`
     }
   }
+
+  // ── 参数规范化：矫正损坏的参数类型（对象→字符串提取、packed 拆分、标量转换）──
+  // 矫正不了的直接失败并附工具特定 hint，让 nudge8 / 模型下一轮自我纠正，
+  // 绝不让 "[object Object]" 之类的垃圾参数进入工具执行。
+  const normalized = normalizeParams(call.toolId, call.parameters, executor.def.schema)
+  if (!normalized.ok) {
+    console.warn(`[executeAction] ${call.toolId} 参数规范化失败: ${normalized.error}`)
+    return {
+      callId: call.id,
+      success: false,
+      result: null,
+      resultType: 'error',
+      resultSummary: `${normalized.error}\n${normalized.hint}`,
+      duration: 0,
+      error: normalized.error
+    }
+  }
+  call = { ...call, parameters: normalized.params }
 
   // 超时控制
   const timeoutMs = executor.def.timeoutMs || 30000

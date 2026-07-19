@@ -20,6 +20,8 @@ import type { ReActStep } from '../../types'
 import type { ObserveDetail, ThinkDetail } from '../../../../src/shared/types'
 import type { PipelineContext } from '../context'
 import { parseReActResponse, parseToolParams } from './react-parser'
+import type { ParsedReActResponse } from './react-parser'
+import type { ChatToolCall } from '../../../providers/types'
 import { buildReActSystemPrompt, buildThinkPrompt } from './prompts'
 import { shouldUseTool, assessToolNeed, EMPTY_ASSESSMENT, type ToolAssessment } from './tool-assessor'
 import { NudgeEngine, type NudgeFired } from './nudge-engine'
@@ -44,6 +46,18 @@ function getLoopExhaustedResponse(userInput: string, steps: ReActStep[]): string
 export interface ReActLoopResult {
   output: string
   llmCalls: number
+}
+
+/** 将工具定义转为 OpenAI 兼容的 tools 格式 */
+function buildOpenAITools(toolDefs: ReturnType<typeof getToolDefs>) {
+  return toolDefs.map(d => ({
+    type: 'function' as const,
+    function: {
+      name: d.id,
+      description: d.description,
+      parameters: d.schema as unknown as Record<string, unknown>
+    }
+  }))
 }
 
 export class ReActLoop {
@@ -114,6 +128,11 @@ export class ReActLoop {
 
     console.log(`[ReAct] Loop starting — complexity=${complexity}, maxIterations=${MAX_ITERATIONS}, tools=[${toolNames.join(', ')}]`)
 
+    // ── 原生 function calling 工具定义（循环外构建一次，run 内工具集不变）──
+    const openaiTools = toolNames.length > 0
+      ? buildOpenAITools(getToolDefs())
+      : undefined
+
     for (let i = 0; i < MAX_ITERATIONS && !isComplete; i++) {
       if (this.ctx.signal?.aborted) {
         console.warn('[ReAct] Loop aborted by signal')
@@ -137,21 +156,95 @@ export class ReActLoop {
       console.log(`[ReAct] Iteration ${i + 1}/${MAX_ITERATIONS} — Think step starting...`)
       const thinkStart = Date.now()
 
-      const thinkResponse = await this.ctx.services.llm.chat({
-        messages: buildLLMMessages(finalSystemPrompt, historyMessages, thinkPrompt),
-        modelKey: reactModelKey,
-        temperature: 0.3,
-        maxTokens: Math.min(config.agent.outputReserve * 2, 8000),
-        signal: this.ctx.signal,
-        timeoutMs: 120 * 1000  // 120s — 过短的超时会误判为 "已停止生成"
-      })
+      // ── 优先使用原生 function calling ──
+      // 如果模型支持 tool_calls，直接走原生路径，避免文本 ReAct 解析；
+      // 已确认不支持的模型直接走文本协议，不再每轮白调一次
+      let thinkResponse = ''
+      let nativeToolCalls: ChatToolCall[] | undefined
+      const canUseNativeTools = openaiTools
+        && !this.ctx.services.llm.isToolsUnsupported(reactModelKey)
+
+      if (canUseNativeTools) {
+        // 尝试原生 function calling
+        try {
+          const toolResponse = await this.ctx.services.llm.chatWithTools({
+            messages: buildLLMMessages(finalSystemPrompt, historyMessages, thinkPrompt),
+            modelKey: reactModelKey,
+            temperature: 0.3,
+            maxTokens: Math.min(config.agent.outputReserve * 2, 8000),
+            signal: this.ctx.signal,
+            timeoutMs: 120 * 1000,
+            tools: openaiTools,
+            toolChoice: 'auto'
+          })
+          thinkResponse = toolResponse.content
+          nativeToolCalls = toolResponse.toolCalls
+        } catch (err) {
+          // 原生 function calling 失败（模型不支持或 API 报错），fallback 到文本 ReAct
+          console.warn(`[ReAct] Iteration ${i + 1} — native function calling failed, falling back to text ReAct:`, (err as Error)?.message)
+          thinkResponse = await this.ctx.services.llm.chat({
+            messages: buildLLMMessages(finalSystemPrompt, historyMessages, thinkPrompt),
+            modelKey: reactModelKey,
+            temperature: 0.3,
+            maxTokens: Math.min(config.agent.outputReserve * 2, 8000),
+            signal: this.ctx.signal,
+            timeoutMs: 120 * 1000
+          })
+        }
+      } else {
+        // 无工具或简单问题，走普通 chat
+        thinkResponse = await this.ctx.services.llm.chat({
+          messages: buildLLMMessages(finalSystemPrompt, historyMessages, thinkPrompt),
+          modelKey: reactModelKey,
+          temperature: 0.3,
+          maxTokens: Math.min(config.agent.outputReserve * 2, 8000),
+          signal: this.ctx.signal,
+          timeoutMs: 120 * 1000
+        })
+      }
 
       const thinkElapsed = Date.now() - thinkStart
       this.ctx.trace.totalInputTokens += countTextTokens(finalSystemPrompt) + countTextTokens(thinkPrompt)
       this.ctx.trace.totalOutputTokens += countTextTokens(thinkResponse)
 
-      // 解析 ReAct 响应
-      const parsed = parseReActResponse(thinkResponse)
+      // ── 解析响应 ──
+      // 优先用原生 tool_calls，没有则 fallback 到文本 ReAct 解析
+      let parsed: ParsedReActResponse
+      // 待执行的工具调用队列（native 路径可能有多个并行 call；文本路径最多一个）
+      let pendingToolCalls: Array<{ action: string; actionInput: string; id?: string }> = []
+
+      if (nativeToolCalls && nativeToolCalls.length > 0) {
+        // 模型返回了原生 tool_calls：parsed 记录第一个（供 nudge/日志），
+        // 全部 call 进入队列顺序执行
+        const first = nativeToolCalls[0]
+        parsed = {
+          thought: thinkResponse.slice(0, 500),
+          action: first.name,
+          actionInput: first.arguments,
+          content: '',
+          hasAction: true,
+          hasContent: false
+        }
+        pendingToolCalls = nativeToolCalls.map(tc => ({
+          action: tc.name,
+          actionInput: tc.arguments,
+          id: tc.id
+        }))
+        console.log(`[ReAct] Iteration ${i + 1} — native tool_calls: ${nativeToolCalls.length} call(s) [${nativeToolCalls.map(t => t.name).join(', ')}], firstArgs=${first.arguments.slice(0, 100)}`)
+      } else if (!thinkResponse) {
+        // 原生路径返回空内容且无 tool_calls（模型可能直接返回了 finish_reason=stop）
+        parsed = {
+          thought: '',
+          action: 'FINAL_ANSWER',
+          actionInput: '',
+          content: '',
+          hasAction: false,
+          hasContent: false
+        }
+      } else {
+        // 文本 ReAct 解析（fallback）
+        parsed = parseReActResponse(thinkResponse)
+      }
       console.log(`[ReAct] Iteration ${i + 1} — Think ✓ ${thinkElapsed}ms, action=${parsed.action}, response=${thinkResponse.length}chars`)
 
       // 创建 Think 步骤（nudge 触发时会重命名该步骤）
@@ -238,46 +331,82 @@ export class ReActLoop {
         break
       }
 
-      // ── Act 步骤（工具调用） ──
+      // ── Act 步骤（工具调用，可能多个） ──
       this.ctx.callbacks.onStateChange?.('working')
 
-      if (parsed.action && toolNames.includes(parsed.action)) {
-        console.log(`[ReAct] Iteration ${i + 1} — executing tool: ${parsed.action}`)
-        const toolParams = parseToolParams(parsed.actionInput)
+      // 文本 ReAct 路径：单个 action 入队
+      if (pendingToolCalls.length === 0 && parsed.action && toolNames.includes(parsed.action)) {
+        pendingToolCalls = [{ action: parsed.action, actionInput: parsed.actionInput }]
+      }
 
-        const toolCall = {
-          id: `call-${Date.now()}`,
-          toolId: parsed.action,
-          parameters: toolParams
+      // ── 未知工具名防线 ──
+      // 模型明确想调工具（hasAction）但名字不存在：纠偏重试，
+      // 而不是把 thought 当作最终回答输出并结束（对编码任务是灾难）。
+      if (pendingToolCalls.length === 0 && parsed.hasAction && parsed.action && toolNames.length > 0) {
+        const nudge10 = this.nudges.checkUnknownTool(parsed.action, i, MAX_ITERATIONS, toolNames)
+        if (nudge10) {
+          this.applyNudge(nudge10, thinkStep, reactSteps, parsed.thought, i)
+          continue
+        }
+        // 超过纠偏上限后落到原逻辑（当作最终回答），避免死循环
+      }
+
+      if (pendingToolCalls.length > 0) {
+        const batchStartStepCount = reactSteps.length
+        let anyFailed = false
+
+        for (let idx = 0; idx < pendingToolCalls.length; idx++) {
+          const call = pendingToolCalls[idx]
+          console.log(`[ReAct] Iteration ${i + 1} — executing tool ${idx + 1}/${pendingToolCalls.length}: ${call.action}`)
+          // native 的 arguments 也可能截断/损坏，统一过 parseToolParams 做 salvage
+          const toolParams = parseToolParams(call.actionInput, call.action)
+
+          const toolCall = {
+            id: call.id || `call-${Date.now()}-${idx}`,
+            toolId: call.action,
+            parameters: toolParams
+          }
+
+          const toolStart = Date.now()
+          const toolResult = await executeAction(toolCall, this.ctx.signal)
+          console.log(`[ReAct] Iteration ${i + 1} — tool ${call.action} ✓ ${Date.now() - toolStart}ms, success=${toolResult.success}`)
+
+          // 创建 Act 步骤
+          this.recordActStep(call.action, toolParams, toolResult)
+
+          // 构建详细的观察结果（包含实际输出内容，供 LLM 后续推理使用）
+          const observationText = buildObservationText(toolResult)
+
+          // 创建 Observe 步骤
+          const observeDetail: ObserveDetail = {
+            type: 'observe',
+            analysis: toolResult.success
+              ? `工具 ${call.action} 执行成功: ${toolResult.resultSummary}`
+              : `工具 ${call.action} 执行失败: ${toolResult.error || toolResult.resultSummary}`,
+            isComplete: false,
+            remainingSteps: []
+          }
+          this.ctx.trace.recordStep('observe', `Observe #${i + 1}`, '👁', observeDetail)
+
+          if (!toolResult.success) anyFailed = true
+
+          reactSteps.push({
+            // thought 只挂在第一个 step 上，避免 buildThinkPrompt 重复打印 N 次
+            think: idx === 0 ? parsed.thought : '',
+            action: call.action,
+            actionInput: toolParams,
+            observation: observationText
+          })
         }
 
-        const toolStart = Date.now()
-        const toolResult = await executeAction(toolCall, this.ctx.signal)
-        console.log(`[ReAct] Iteration ${i + 1} — tool ${parsed.action} ✓ ${Date.now() - toolStart}ms, success=${toolResult.success}`)
-
-        // 创建 Act 步骤
-        this.recordActStep(parsed.action, toolParams, toolResult)
-
-        // 构建详细的观察结果（包含实际输出内容，供 LLM 后续推理使用）
-        const observationText = buildObservationText(toolResult)
-
-        // 创建 Observe 步骤
-        const observeDetail: ObserveDetail = {
-          type: 'observe',
-          analysis: toolResult.success
-            ? `工具 ${parsed.action} 执行成功: ${toolResult.resultSummary}`
-            : `工具 ${parsed.action} 执行失败: ${toolResult.error || toolResult.resultSummary}`,
-          isComplete: false,
-          remainingSteps: []
+        // ── 纠偏机制 8：整批执行完后检查是否有参数名错误 ──
+        if (anyFailed) {
+          const nudge8 = this.nudges.checkWrongParams(nudgeInput, reactSteps.slice(batchStartStepCount))
+          if (nudge8) {
+            this.applyNudge(nudge8, thinkStep, reactSteps, parsed.thought, i)
+            continue
+          }
         }
-        this.ctx.trace.recordStep('observe', `Observe #${i + 1}`, '👁', observeDetail)
-
-        reactSteps.push({
-          think: parsed.thought,
-          action: parsed.action,
-          actionInput: toolParams,
-          observation: observationText
-        })
       } else {
         // 未知动作，当作最终回答
         finalOutput = parsed.content || parsed.thought || thinkResponse || ''
